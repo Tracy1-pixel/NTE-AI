@@ -112,6 +112,7 @@ class RunnerTests(unittest.TestCase):
         self.assertEqual(parse_score('1,901 / 1900'), 1901)
         self.assertEqual(parse_score('1899／1900'), 1899)
         self.assertEqual(parse_score('1900/1900'), 1900)
+        self.assertEqual(parse_score('1900//1900'), 1900)
         self.assertIsNone(parse_score('1900'))
         self.assertIsNone(parse_score('1900/2000'))
         self.assertIsNone(parse_score('99999/1900'))

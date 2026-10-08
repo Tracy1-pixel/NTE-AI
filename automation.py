@@ -49,6 +49,7 @@ def parse_score(text, target=1900):
     """Require the complete fraction so the denominator cannot count as progress."""
     text = text.replace('／', '/').replace('，', ',')
     compact = re.sub(r'[\s,]', '', text)
+    compact = re.sub(r'/{2,}', '/', compact)
     match = re.search(r'(?<!\d)(\d{1,5})/' + str(target) + r'(?!\d)', compact)
     if not match:
         return None
