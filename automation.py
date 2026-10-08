@@ -3,13 +3,42 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
+import os
 import random
 import re
 import threading
 import time
+import sys
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent
+ROOT = (Path(os.environ.get('LOCALAPPDATA', str(Path.home()))) / 'NTE-AI'
+        if getattr(sys, 'frozen', False) else Path(__file__).resolve().parent)
+
+
+def default_config():
+    return {
+        'click_interval': 0.08, 'scan_interval': 0.25, 'confirm_frames': 3,
+        'round_timeout': 180, 'transition_timeout': 30, 'max_rounds': 100,
+        'max_minutes': 60, 'enter_steps': [], 'exit_steps': [],
+        'goal_mode': 'score', 'target_score': 1900,
+    }
+
+
+def load_config():
+    config = default_config()
+    path = ROOT / 'config.json'
+    if path.exists():
+        config.update(json.loads(path.read_text('utf-8')))
+    return config
+
+
+def save_config(config):
+    ROOT.mkdir(parents=True, exist_ok=True)
+    path = ROOT / 'config.json'
+    temporary = ROOT / 'config.json.tmp'
+    temporary.write_text(json.dumps(config, ensure_ascii=False, indent=2), 'utf-8')
+    temporary.replace(path)
 
 
 class Stopped(Exception):
@@ -40,15 +69,17 @@ def validate(config):
     for name in ('enter_steps', 'exit_steps'):
         for step in config[name]:
             if step.get('key'):
-                if step['key'] != 'esc' or step['delay'] < 0:
+                if step['key'] != 'esc' or not math.isfinite(step['delay']) or step['delay'] < 0:
                     raise ValueError('键盘步骤只支持 esc，等待不能为负数')
-            elif min(step['x'], step['y'], step['delay']) < 0:
+            elif any(not math.isfinite(v) or v < 0 for v in (step['x'], step['y'], step['delay'])):
                 raise ValueError('点击坐标和等待时间不能为负数')
     for name, default in (('click_interval', 0.08), ('scan_interval', 0.25), ('round_timeout', 180), ('transition_timeout', 30), ('max_rounds', 100), ('max_minutes', 60)):
-        if config.get(name, default) <= 0:
+        if not math.isfinite(config.get(name, default)) or config.get(name, default) <= 0:
             raise ValueError(f'{name} 必须大于零')
-    if config.get('confirm_frames', 3) < 2:
+    if not isinstance(config.get('confirm_frames', 3), int) or config.get('confirm_frames', 3) < 2:
         raise ValueError('连续确认帧数至少为 2')
+    if not isinstance(config.get('max_rounds', 100), int):
+        raise ValueError('轮数上限必须为整数')
 
 
 class Runner:
@@ -206,30 +237,46 @@ class Desktop:
         return float(scores.max()) >= rule.get('threshold', 0.88)
 
 
-def configure():
+def configure(master=None, on_close=None):
     import tkinter as tk
     from tkinter import messagebox
     import pyautogui as pg
     from PIL import ImageTk
 
-    path = ROOT / 'config.json'
-    c = json.loads(path.read_text('utf-8')) if path.exists() else {
-        'click_interval': 0.08, 'scan_interval': 0.25, 'confirm_frames': 3,
-        'round_timeout': 180, 'transition_timeout': 30, 'max_rounds': 100,
-        'max_minutes': 60, 'enter_steps': [], 'exit_steps': [],
-    }
+    c = load_config()
     c['goal_mode'] = 'score'
     c['target_score'] = 1900
-    root = tk.Tk()
+    root = tk.Toplevel(master) if master else tk.Tk()
+    if master:
+        master.withdraw()
+    def close():
+        root.destroy()
+        if master:
+            master.deiconify()
+        if on_close:
+            on_close()
+    root.protocol('WM_DELETE_WINDOW', close)
     root.title('异环 · 店长特供配置')
     status = tk.StringVar(value='游戏放在主屏幕；保持窗口位置、分辨率和 UI 缩放固定。')
     tk.Label(root, textvariable=status, wraplength=580).pack(padx=15, pady=10)
+    steps_view = tk.Listbox(root, width=70, height=7)
+    def refresh_steps():
+        steps_view.delete(0, 'end')
+        for name, title in (('exit_steps', '退出'), ('enter_steps', '重进')):
+            for i, step in enumerate(c[name], 1):
+                action = 'Esc' if step.get('key') else f"点击 ({step['x']}, {step['y']})"
+                steps_view.insert('end', f"{title} {i}. {action} → 等待 {step['delay']} 秒")
 
     def capture(name):
         root.iconify()
 
         def select():
-            shot = pg.screenshot()
+            try:
+                shot = pg.screenshot()
+            except Exception as error:
+                root.deiconify()
+                messagebox.showerror('截图失败', str(error), parent=root)
+                return
             window = tk.Toplevel(root)
             window.attributes('-fullscreen', True)
             window.attributes('-topmost', True)
@@ -304,6 +351,7 @@ def configure():
             c.setdefault(name, []).append({'x': pos.x, 'y': pos.y, 'delay': seconds})
             root.deiconify()
             status.set(f'{name} 已录入 {len(c[name])} 步，最新位置 {pos.x}, {pos.y}')
+            refresh_steps()
 
         root.after(3000, finish)
 
@@ -314,23 +362,30 @@ def configure():
         def clear(n=name):
             c[n] = []
             status.set(f'{n} 已清空')
+            refresh_steps()
         tk.Button(row, text=f'清空{label}步骤', command=clear).pack(side='right')
 
     def add_escape():
+        if c['exit_steps'] and c['exit_steps'][0].get('key') == 'esc':
+            status.set('退出步骤开头已有 Esc，无需重复添加。')
+            return
         c['exit_steps'].insert(0, {'key': 'esc', 'delay': 2.0})
         status.set('已在退出步骤开头加入 Esc；随后录入退出和确认领取按钮。')
+        refresh_steps()
     tk.Button(root, text='在退出步骤开头加入 Esc（只加一次）', command=add_escape).pack(pady=3)
+    steps_view.pack(padx=15, pady=5)
+    refresh_steps()
 
     def save():
         try:
-            validate(c)
-            path.write_text(json.dumps(c, ensure_ascii=False, indent=2), 'utf-8')
-            status.set('已保存 config.json。请关闭配置窗口，在新一轮点击阶段启动 run。')
-        except ValueError as error:
+            save_config(c)
+            status.set('配置已保存，可关闭此窗口返回主页；未录完的项目以后可继续补录。')
+        except (ValueError, OSError) as error:
             messagebox.showerror('配置未完成', str(error))
 
     tk.Button(root, text='保存配置', command=save).pack(pady=12)
-    root.mainloop()
+    if not master:
+        root.mainloop()
 
 
 def main():

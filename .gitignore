@@ -3,3 +3,9 @@ __pycache__/
 config.json
 captures/
 *.log
+build/
+dist/
+*.spec
+bundled-test.json
+installed-test.json
+:memory:.ses
