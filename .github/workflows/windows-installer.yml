@@ -26,7 +26,18 @@ jobs:
         run: choco install innosetup --no-progress -y
       - name: Build and smoke test application
         shell: pwsh
-        run: ./packaging/build.ps1
+        run: |
+          try { ./packaging/build.ps1 }
+          catch { Write-Output "::error::$($_.Exception.Message)"; throw }
+      - name: Save build diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-build-diagnostics
+          path: |
+            *-test.json
+            *-build.log
+          if-no-files-found: ignore
       - uses: actions/upload-artifact@v4
         with:
           name: NTE-AI-Windows-installer
