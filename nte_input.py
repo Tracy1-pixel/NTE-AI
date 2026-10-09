@@ -29,6 +29,7 @@ class MoveResult:
     before: tuple
     after: tuple
     target: tuple
+    method: str = '相对输入'
 
 class MouseAPI:
     def __init__(self):
@@ -41,6 +42,45 @@ class MouseAPI:
         self.point = wt.POINT
         self.u.GetCursorPos.argtypes = [ct.POINTER(wt.POINT)]
         self.u.GetCursorPos.restype = wt.BOOL
+        self.rect = wt.RECT
+        self.u.GetClipCursor.argtypes = [ct.POINTER(wt.RECT)]
+        self.u.GetClipCursor.restype = wt.BOOL
+        self.u.SetCursorPos.argtypes = [ct.c_int, ct.c_int]
+        self.u.SetCursorPos.restype = wt.BOOL
+        self.u.GetSystemMetrics.argtypes = [ct.c_int]
+        self.u.GetSystemMetrics.restype = ct.c_int
+        self.u.GetWindowThreadProcessId.argtypes = [wt.HWND, ct.POINTER(wt.DWORD)]
+        self.u.GetWindowThreadProcessId.restype = wt.DWORD
+
+    def clip_rect(self):
+        rect = self.rect()
+        if not self.u.GetClipCursor(ct.byref(rect)):
+            raise OSError('无法读取鼠标活动范围')
+        return rect.left, rect.top, rect.right, rect.bottom
+
+    def move_absolute(self, x, y):
+        left, top, width, height = (self.u.GetSystemMetrics(i) for i in (76, 77, 78, 79))
+        if width <= 1 or height <= 1:
+            raise ValueError('无法读取虚拟桌面尺寸')
+        dx = max(0, min(65535, round((x - left) * 65535 / (width - 1))))
+        dy = max(0, min(65535, round((y - top) * 65535 / (height - 1))))
+        return self.send(0x0001 | 0x8000 | 0x4000, dx, dy)
+
+    def set_position(self, x, y):
+        ct.set_last_error(0)
+        if not self.u.SetCursorPos(x, y):
+            raise OSError(f'SetCursorPos 失败（错误 {ct.get_last_error()}）')
+        return 1
+
+    def diagnostics(self, hwnd=None):
+        from ctypes import wintypes as wt
+        import os
+        pid = wt.DWORD()
+        if hwnd:
+            self.u.GetWindowThreadProcessId(hwnd, ct.byref(pid))
+        helper = process_elevated(os.getpid())
+        game = process_elevated(pid.value) if pid.value else '未知'
+        return f'系统坐标 {self.position()}；鼠标活动范围 {self.clip_rect()}；助手管理员={helper}，游戏进程管理员={game}'
 
     def position(self):
         point = self.point()
@@ -51,14 +91,46 @@ class MouseAPI:
     def send(self, flags, dx=0, dy=0, data=0):
         packet = Input(0, InputData(mi=MouseInput(dx, dy, data & 0xffffffff, flags, 0, 0)))
         ct.set_last_error(0)
-        if self.u.SendInput(1, ct.byref(packet), ct.sizeof(Input)) != 1:
+        accepted = self.u.SendInput(1, ct.byref(packet), ct.sizeof(Input))
+        if accepted != 1:
             error = ct.get_last_error()
             raise OSError(f'Windows 未接收鼠标输入（错误 {error}）；如果游戏以管理员身份运行，请以管理员身份运行助手')
+        return int(accepted)
+
+
+def process_elevated(pid):
+    """Read actual process token elevation; do not infer it from how it launched."""
+    from ctypes import wintypes as wt
+    kernel, advapi = ct.WinDLL('kernel32', use_last_error=True), ct.WinDLL('advapi32', use_last_error=True)
+    for library, name, args, result in (
+        (kernel, 'OpenProcess', [wt.DWORD, wt.BOOL, wt.DWORD], wt.HANDLE),
+        (kernel, 'CloseHandle', [wt.HANDLE], wt.BOOL),
+        (advapi, 'OpenProcessToken', [wt.HANDLE, wt.DWORD, ct.POINTER(wt.HANDLE)], wt.BOOL),
+        (advapi, 'GetTokenInformation', [wt.HANDLE, ct.c_int, ct.c_void_p, wt.DWORD, ct.POINTER(wt.DWORD)], wt.BOOL),
+    ):
+        function = getattr(library, name)
+        function.argtypes, function.restype = args, result
+    process = kernel.OpenProcess(0x1000, False, pid)
+    if not process:
+        return '未知'
+    token = wt.HANDLE()
+    try:
+        if not advapi.OpenProcessToken(process, 0x0008, ct.byref(token)):
+            return '未知'
+        elevated, length = wt.DWORD(), wt.DWORD()
+        if not advapi.GetTokenInformation(token, 20, ct.byref(elevated), ct.sizeof(elevated), ct.byref(length)):
+            return '未知'
+        return '是' if elevated.value else '否'
+    finally:
+        if token.value:
+            kernel.CloseHandle(token)
+        kernel.CloseHandle(process)
 
 class WindowsMouse:
-    def __init__(self, guard, stop=None, api=None, sleep=time.sleep):
+    def __init__(self, guard, stop=None, api=None, sleep=time.sleep, log=lambda text: None):
         self.api = api if api is not None else MouseAPI()
         self.guard, self.stop, self.sleep = guard, stop, sleep
+        self.log = log
 
     def wait(self, seconds):
         if self.stop is not None:
@@ -71,6 +143,9 @@ class WindowsMouse:
         self.guard()
         target = (round(x), round(y))
         before = self.api.position()
+        clip = self.api.clip_rect()
+        if clip and not (clip[0] <= target[0] < clip[2] and clip[1] <= target[1] < clip[3]):
+            raise ValueError(f'鼠标活动范围限制 {clip} 不包含目标 {target}；原位置 / 实际 {before}。暂停点击，不修改游戏的鼠标限制')
         unchanged = 0
         for _ in range(48):
             self.guard()
@@ -88,7 +163,24 @@ class WindowsMouse:
             if unchanged >= 3:
                 break
         actual = self.api.position()
-        raise ValueError(f'鼠标移动未确认：原位置 {before}，目标 {target}，实际 {actual}；暂停点击。请检查助手与游戏权限、游戏是否锁定鼠标或是否接收模拟输入')
+        self.log(f'相对 SendInput 返回已接收，但移动未确认：原位置 {before}，目标 {target}，实际 {actual}，鼠标活动范围 {clip}；尝试标准坐标定位')
+        attempts = []
+        for name, action in (('绝对 SendInput', self.api.move_absolute), ('SetCursorPos', self.api.set_position)):
+            self.guard()
+            try:
+                accepted = action(*target)
+                immediate = self.api.position()
+                self.wait(0.05)
+                self.guard()
+                actual = self.api.position()
+                attempts.append(f'{name}返回={accepted}，即时={immediate}，延后={actual}')
+                if max(abs(actual[0]-target[0]), abs(actual[1]-target[1])) <= 4:
+                    return MoveResult(before, actual, target, name)
+            except Stopped:
+                raise
+            except OSError as error:
+                attempts.append(f'{name}失败：{error}')
+        raise ValueError(f'鼠标移动未确认：原位置 {before}，目标 {target}，实际 {actual}；范围 {clip}；' + '；'.join(attempts) + '；暂停点击。若即时到达后又返回原点，可能是游戏重置光标；若始终不变，需结合鼠标诊断检查权限或输入拦截')
 
     def click(self):
         self.guard()

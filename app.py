@@ -112,6 +112,9 @@ def self_test(report):
                 root.update()
                 window.area()
             mouse = WindowsMouse(input_guard)
+            diagnostic = mouse.api.diagnostics(hwnd)
+            if '助手管理员=未知' in diagnostic or '游戏进程管理员=未知' in diagnostic:
+                raise RuntimeError(f'Windows 当前进程权限诊断失败：{diagnostic}')
             # Real input goes only to this test-owned window, never to a game.
             mouse.move(*area.point(1279.5, 719.5, workflow.REFERENCE))
             mouse.click()
@@ -119,6 +122,15 @@ def self_test(report):
             root.update()
             if 'click' not in received or not any(isinstance(event, tuple) and event[0] == 'wheel' and event[1] < 0 for event in received):
                 raise RuntimeError(f'Windows 实际鼠标移动 / 点击 / 滚轮事件未确认：{received}')
+            for method, target in ((mouse.api.move_absolute, (area.x + 250, area.y + 150)),
+                                   (mouse.api.set_position, (area.x + 400, area.y + 225))):
+                input_guard()
+                method(*target)
+                time.sleep(0.05)
+                input_guard()
+                actual = mouse.api.position()
+                if max(abs(actual[0] - target[0]), abs(actual[1] - target[1])) > 4:
+                    raise RuntimeError(f'Windows 鼠标坐标定位回退自检失败：目标 {target}，实际 {actual}')
             foreground = api.u.GetForegroundWindow()
             area = api.geometry(hwnd)
             app.overlay.refresh(RuntimeStatus(phase='连点锤子', state='running', score=1927))
@@ -157,7 +169,7 @@ class App:
         self.busy = False
         self.runtime = RuntimeStatus()
         self.overlay = None
-        root.title('异环助手 · 店长特供 1.7')
+        root.title('异环助手 · 店长特供 1.8')
         root.geometry('980x820')
         root.minsize(920, 760)
         root.configure(bg='#0b1220')
@@ -195,7 +207,7 @@ class App:
         self.config_button = ttk.Button(sidebar, text='七图流程说明', command=self.configure)
         self.config_button.pack(fill='x', pady=5)
         tk.Label(sidebar, text='01  识别初始界面\n\n02  三星锚点 / 选关\n\n03  锤子连点\n\n04  结算 / 重试', bg='#101b31', fg='#8fa1bc', justify='left', font=('Microsoft YaHei UI', 10), anchor='nw').pack(fill='x', pady=30)
-        tk.Label(sidebar, text='当前游戏窗口\n自动读取尺寸\n\nv1.7.0', bg='#101b31', fg='#61738d', justify='left', font=('Segoe UI', 10), anchor='sw').pack(side='bottom', fill='x')
+        tk.Label(sidebar, text='当前游戏窗口\n自动读取尺寸\n\nv1.8.0', bg='#101b31', fg='#61738d', justify='left', font=('Segoe UI', 10), anchor='sw').pack(side='bottom', fill='x')
 
         outer = ttk.Frame(root, padding=(24, 22))
         outer.pack(fill='both', expand=True)
@@ -247,7 +259,9 @@ class App:
         self.stop_button = ttk.Button(actions, text='停止', style='Stop.TButton', command=self.request_stop, state='disabled')
         self.stop_button.pack(side='left', padx=(0, 8))
         self.check_button = ttk.Button(actions, text='检查画面', command=lambda: self.launch('check'))
-        self.check_button.pack(side='left')
+        self.check_button.pack(side='left', padx=(0, 8))
+        self.diagnose_button = ttk.Button(actions, text='鼠标诊断', command=lambda: self.launch('diagnose'))
+        self.diagnose_button.pack(side='left')
         ttk.Label(actions, text='F8  快捷停止', style='Muted.TLabel').pack(side='right')
         self.status = tk.StringVar(value='准备就绪，请打开图一的店长特供界面。')
         ttk.Label(outer, textvariable=self.status, wraplength=680).pack(anchor='w', pady=(3, 7))
@@ -382,12 +396,12 @@ class App:
         self.busy = True
         self.window_list.configure(state='disabled')
         self.stop.clear()
-        self.runtime = RuntimeStatus(phase='准备运行' if mode == 'run' else '检查画面', state='starting', details='5 秒后处理游戏窗口，请切回游戏')
+        self.runtime = RuntimeStatus(phase='准备运行' if mode == 'run' else ('鼠标诊断' if mode == 'diagnose' else '检查画面'), state='starting', details='5 秒后处理游戏窗口，请切回游戏')
         self.paint_status()
         self.stop_button.configure(state='normal')
         if self.overlay:
             self.overlay.attach(handle)
-        for button in (self.config_button, self.check_button, self.start_button, self.window_refresh):
+        for button in (self.config_button, self.check_button, self.diagnose_button, self.start_button, self.window_refresh):
             button.configure(state='disabled')
         self.log('窗口最小化，5 秒后处理游戏画面，请切回游戏。')
         self.root.iconify()
@@ -405,6 +419,16 @@ class App:
             listener.start()
             if self.stop.wait(5):
                 raise engine.Stopped('已取消')
+            if mode == 'diagnose':
+                from nte_input import MouseAPI
+                api = nte_window.Win32()
+                if not api.valid(handle):
+                    raise ValueError('所选游戏窗口已关闭，请刷新后重新选择')
+                emit('鼠标诊断（只读）：' + MouseAPI().diagnostics(handle))
+                area = api.geometry(handle)
+                emit(f'游戏内容区 {area.region()}；当前是否前台={api.foreground(handle)}。诊断未移动、点击、滚动或修改鼠标限制。')
+                self.events.put(('runtime', {'phase': '诊断完成', 'state': 'stopped', 'details': '鼠标诊断完成，请复制运行记录中的诊断信息'}))
+                return
             desktop = workflow.DesktopBackend(self.stop, config['window_title'], handle, prepare=(mode == 'run'), capture_shield=self.overlay.shield if self.overlay else None, log=emit)
             if self.stop.is_set():
                 raise engine.Stopped('已停止')
@@ -443,7 +467,7 @@ class App:
                     if self.overlay:
                         self.overlay.hide()
                     self.window_list.configure(state='readonly')
-                    for button in (self.config_button, self.check_button, self.start_button, self.window_refresh):
+                    for button in (self.config_button, self.check_button, self.diagnose_button, self.start_button, self.window_refresh):
                         button.configure(state='normal')
                     self.root.deiconify()
         except queue.Empty:

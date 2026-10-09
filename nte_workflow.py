@@ -302,7 +302,8 @@ class DesktopBackend:
             time.sleep(0.3)
         self.window.area()
         from nte_input import WindowsMouse
-        self.mouse = WindowsMouse(self.guard, self.stop)
+        self.mouse = WindowsMouse(self.guard, self.stop, log=self.log)
+        self.log('鼠标诊断：' + self.mouse.api.diagnostics(handle))
         self.reader = ScreenReader()
         from nte_cursor import CursorDetector
         from nte_stars import StarAnchorDetector
@@ -349,7 +350,7 @@ class DesktopBackend:
         # cursor followed the event. Require the photographed arrow near target.
         for _ in range(3):
             if self.find_cursor():
-                self.log(f'{label}：系统光标 {result.before} → {result.after}，目标 {result.target}；目标附近游戏光标已确认')
+                self.log(f'{label}（{result.method}）：系统光标 {result.before} → {result.after}，目标 {result.target}；目标附近游戏光标已确认')
                 return result
             self.mouse.wait(0.1)
             self.guard()

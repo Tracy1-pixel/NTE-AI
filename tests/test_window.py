@@ -54,7 +54,7 @@ class WindowTests(unittest.TestCase):
                     patch('nte_cursor.CursorDetector'), patch('nte_stars.StarAnchorDetector'), \
                     patch.object(workflow.time, 'sleep'):
                 api.calls.clear()
-                backend = workflow.DesktopBackend(hwnd=2**40, prepare=prepare)
+                backend = workflow.DesktopBackend(hwnd=2**40, prepare=prepare, log=lambda text: None)
                 self.assertEqual(api.client, original)
                 self.assertEqual(api.calls, [('activate', 2**40)] if prepare else [])
                 self.assertEqual(backend.point(1279.5, 719.5), (608, 439))
