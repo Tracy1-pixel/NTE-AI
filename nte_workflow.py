@@ -294,8 +294,6 @@ class DesktopBackend:
         self.window = GameWindow(api, handle, tuple(pg.size()))
         if prepare:
             self.guard(stop_only=True)
-            self.window.resize()
-            self.guard(stop_only=True)
             api.activate(handle)
             time.sleep(0.3)
         self.window.area()

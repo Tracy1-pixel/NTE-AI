@@ -70,10 +70,13 @@ class StarTests(unittest.TestCase):
         frame = self.frame()
         group = self.detector.find(frame)
         self.assertEqual(group.center, (229, 682.5))
-        normalized = cv2.resize(cv2.resize(frame, (1920, 1080)), REFERENCE)
-        resized = self.detector.find(normalized)
-        self.assertAlmostEqual(resized.center[0], group.center[0], delta=2)
-        self.assertAlmostEqual(resized.center[1], group.center[1], delta=2)
+        for size in ((1280, 720), (1600, 900), (1920, 1080)):
+            with self.subTest(size=size):
+                normalized = cv2.resize(cv2.resize(frame, size), REFERENCE)
+                resized = self.detector.find(normalized)
+                self.assertIsNotNone(resized)
+                self.assertAlmostEqual(resized.center[0], group.center[0], delta=2)
+                self.assertAlmostEqual(resized.center[1], group.center[1], delta=2)
 
     def test_each_wheel_batch_moves_to_detected_triplet_and_detects_bottom(self):
         frame = self.frame()

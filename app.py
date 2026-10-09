@@ -81,18 +81,21 @@ def self_test(report):
         if sys.platform == 'win32':
             probe = tk.Toplevel(root)
             probe.title('NTE Window Smoke')
-            probe.maxsize(4096, 2160)
-            probe.geometry('320x180+100+100')
+            probe.geometry('640x360+100+100')
             root.update()
             api = nte_window.Win32()
             hwnd = int(api.u.GetAncestor(probe.winfo_id(), 2))
-            area = api.geometry(hwnd)
-            x, y, width, height = api.outer(hwnd)
-            api.resize(hwnd, x, y, 1920 + width - area.width, 1080 + height - area.height)
+            window = nte_window.GameWindow(api, hwnd, tuple(pyautogui.size()))
+            original = api.geometry(hwnd)
+            area = window.area(require_foreground=False)
+            if (area.width, area.height) != (640, 360) or api.geometry(hwnd) != original:
+                raise RuntimeError('Windows 当前窗口内容区只读测试失败')
+            # Resize only this test-owned Tk window to verify tracking.
+            probe.geometry('800x450+120+110')
             root.update()
-            resized = api.geometry(hwnd)
-            if (resized.width, resized.height) != nte_window.CLIENT_SIZE:
-                raise RuntimeError('Windows 内容区 1920×1080 调整测试失败')
+            area = window.area(require_foreground=False)
+            if (area.width, area.height) != (800, 450) or area.point(1279.5, 719.5, workflow.REFERENCE) != (area.x + 400, area.y + 225):
+                raise RuntimeError('Windows 窗口变化后的坐标换算测试失败')
             if nte_window.choose_window(api, hwnd=hwnd) != hwnd:
                 raise RuntimeError('Windows 窗口选择测试失败')
             from nte_status import overlay_position
@@ -102,7 +105,6 @@ def self_test(report):
             foreground = api.u.GetForegroundWindow()
             area = api.geometry(hwnd)
             app.overlay.refresh(RuntimeStatus(phase='连点锤子', state='running', score=1927))
-            # Native tests do not require the runner desktop to fit the game window.
             app.overlay.shield.show(*overlay_position(area))
             root.update_idletasks()
             styles = api.u.GetWindowLongPtrW(app.overlay.hwnd, -20)
@@ -138,7 +140,7 @@ class App:
         self.busy = False
         self.runtime = RuntimeStatus()
         self.overlay = None
-        root.title('异环助手 · 店长特供 1.5')
+        root.title('异环助手 · 店长特供 1.6')
         root.geometry('980x820')
         root.minsize(920, 760)
         root.configure(bg='#0b1220')
@@ -176,7 +178,7 @@ class App:
         self.config_button = ttk.Button(sidebar, text='七图流程说明', command=self.configure)
         self.config_button.pack(fill='x', pady=5)
         tk.Label(sidebar, text='01  识别初始界面\n\n02  三星锚点 / 选关\n\n03  锤子连点\n\n04  结算 / 重试', bg='#101b31', fg='#8fa1bc', justify='left', font=('Microsoft YaHei UI', 10), anchor='nw').pack(fill='x', pady=30)
-        tk.Label(sidebar, text='窗口模式\n1920 × 1080\n\nv1.5.0', bg='#101b31', fg='#61738d', justify='left', font=('Segoe UI', 10), anchor='sw').pack(side='bottom', fill='x')
+        tk.Label(sidebar, text='当前游戏窗口\n自动读取尺寸\n\nv1.6.0', bg='#101b31', fg='#61738d', justify='left', font=('Segoe UI', 10), anchor='sw').pack(side='bottom', fill='x')
 
         outer = ttk.Frame(root, padding=(24, 22))
         outer.pack(fill='both', expand=True)
@@ -210,7 +212,7 @@ class App:
         self.window_refresh = ttk.Button(target_row, text='刷新', command=self.refresh_windows)
         self.window_refresh.pack(side='right')
         self.window_choices = {}
-        ttk.Label(target, text='游戏先切换普通窗口模式；开始时自动调整内容区至 1920×1080。', style='Muted.TLabel', wraplength=650).pack(anchor='w', pady=(8, 0))
+        ttk.Label(target, text='沿用当前游戏窗口尺寸和位置，识别与点击坐标自动换算。', style='Muted.TLabel', wraplength=650).pack(anchor='w', pady=(8, 0))
 
         options = ttk.LabelFrame(outer, text='运行参数', padding=12)
         options.pack(fill='x', pady=(0, 10))
@@ -332,7 +334,7 @@ class App:
                 '⑦ 都市体力或领取消耗连续确认为 0 时停止。\n\n'
                 '停止按钮 / F8 手动停止，没有总时长和轮数上限。\n'
                 '未知界面或运行错误时暂停操作，等待恢复；F8 停止。\n'
-                '游戏需先切换普通窗口模式；内容区固定为 1920×1080，位置自动跟随。')
+                '沿用当前游戏窗口，不调整尺寸和位置；识别与点击跟随实际内容区。')
         self.ttk.Label(window, text=text, wraplength=570, padding=20).pack()
         def use():
             try:
@@ -392,7 +394,7 @@ class App:
             if mode == 'check':
                 scene = desktop.observe()
                 emit(f'当前界面：{scene.page}；营业额：{scene.score}；都市体力：{scene.city}；领取消耗：{scene.cost}')
-                emit('检查不会点击或改变窗口尺寸。内容区需为 1920×1080；开始运行必须是图一。')
+                emit('检查不会点击或改变窗口尺寸。使用当前内容区；开始运行必须是图一。')
             else:
                 workflow.Controller(config, desktop, self.stop, log=emit, report=lambda data: self.events.put(('runtime', data))).run()
         except engine.Stopped as error:

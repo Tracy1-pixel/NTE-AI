@@ -403,7 +403,7 @@ def main():
         return
     import nte_workflow as workflow
     if args.command == 'check':
-        print('5 秒后检查，请切回已设为 1920×1080 的游戏窗口。')
+        print('5 秒后检查，请切回游戏；沿用当前窗口尺寸和位置。')
         time.sleep(5)
         print(workflow.DesktopBackend(title=load_config().get('window_title', ''), prepare=False).observe())
         return
