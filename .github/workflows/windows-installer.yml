@@ -48,3 +48,45 @@ jobs:
           name: NTE-AI-GUI-preview
           path: installed-test.png
           if-no-files-found: error
+  publish:
+    name: Publish installer download
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    concurrency:
+      group: installer-release
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: NTE-AI-Windows-installer
+          path: installer
+      - name: Publish tested EXE to GitHub Releases
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        shell: bash
+        run: |
+          setup_files=(installer/NTE-AI-Setup-*.exe)
+          if (( ${#setup_files[@]} != 1 )) || [[ ! -f "${setup_files[0]}" ]]; then
+            echo "::error::Expected exactly one tested Windows installer"
+            exit 1
+          fi
+          filename="${setup_files[0]##*/}"
+          version="${filename#NTE-AI-Setup-}"
+          version="${version%.exe}"
+          if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Invalid installer version"
+            exit 1
+          fi
+          release_tag="v$version"
+          if gh release view "$release_tag" > /dev/null 2>&1; then
+            echo "Release $release_tag already exists; keeping the published installer."
+          else
+            gh release create "$release_tag" "${setup_files[0]}" \
+              --target "$GITHUB_SHA" \
+              --title "异环助手 $version" \
+              --notes-file packaging/release-notes.md \
+              --latest

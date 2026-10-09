@@ -4,7 +4,7 @@ Windows 10/11 x64 桌面应用，安装后通过桌面“异环助手”打开�
 
 ## 安装与开始
 
-在仓库 **Actions → Windows installer → 最新成功构建 → Artifacts → NTE-AI-Windows-installer** 下载（需要登录 GitHub）。解压 ZIP，运行 `NTE-AI-Setup-1.3.0.exe`。已有旧版可直接安装升级，应用配置目录为 `%LOCALAPPDATA%\NTE-AI`。
+[直接下载 Windows EXE 安装包](https://github.com/Tracy1-pixel/NTE-AI/releases/download/v1.3.0/NTE-AI-Setup-1.3.0.exe)，或打开 [Releases 下载页面](https://github.com/Tracy1-pixel/NTE-AI/releases/latest)，在 Assets 中选择 `NTE-AI-Setup-1.3.0.exe`。双击安装后，通过桌面 **“异环助手”快捷方式** 打开中文界面，点击“开始运行”或“停止”。无需下载源代码、解压 ZIP 或安装 Python。已有旧版可直接安装升级，应用配置目录为 `%LOCALAPPDATA%\NTE-AI`。
 
 游戏须先在游戏设置中切换为**普通窗口模式**。新版将游戏**内容区固定为 1920×1080**，标题栏和边框另算；开始运行时自动调整所选窗口尺寸和位置。助手使用独立的深色控制台界面，显示窗口尺寸、运行阶段、营业额和完成 / 失败次数。
 
@@ -69,7 +69,7 @@ python -m unittest discover -s tests -v
 .\packaging\build.ps1
 ```
 
-GitHub Actions 使用 Windows 构建，打包 OCR 模型与截图模板，测试安装后的 GUI、真实截图数字识别、Windows 窗口内容区调整、停止按钮、状态栏位置 / 点击穿透 / 焦点以及桌面快捷方式。安装程序未签名，安装向导为英语，应用为中文。
+GitHub Actions 使用 Windows 构建，打包 OCR 模型与截图模板，测试安装后的 GUI、真实截图数字识别、Windows 窗口内容区调整、停止按钮、状态栏位置 / 点击穿透 / 焦点以及桌面快捷方式。验证通过后自动将 EXE 发布至 GitHub Releases；已有版本保持不变，更新安装包时须提升版本号。安装程序未签名，安装向导为英语，应用为中文。
 
 ## 验证范围
 
