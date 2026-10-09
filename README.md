@@ -1,10 +1,58 @@
 # 异环助手 · 店长特供 1.3
 
-Windows 10/11 x64 桌面应用，安装后通过桌面“异环助手”打开中文 GUI，无需单独安装 Python。新版内置玩家提供的七图界面模板和操作位置。
+Windows 10/11 x64 桌面应用，安装后通过桌面“异环助手”打开中文 GUI。使用 EXE 安装包时无需单独安装 Python；也支持下载源码并通过 PowerShell 运行。新版内置玩家提供的七图界面模板和操作位置。
 
 ## 安装与开始
 
+### 方法一：EXE 安装包
+
 [直接下载 Windows EXE 安装包](https://github.com/Tracy1-pixel/NTE-AI/releases/download/v1.3.0/NTE-AI-Setup-1.3.0.exe)，或打开 [Releases 下载页面](https://github.com/Tracy1-pixel/NTE-AI/releases/latest)，在 Assets 中选择 `NTE-AI-Setup-1.3.0.exe`。双击安装后，通过桌面 **“异环助手”快捷方式** 打开中文界面，点击“开始运行”或“停止”。无需下载源代码、解压 ZIP 或安装 Python。已有旧版可直接安装升级，应用配置目录为 `%LOCALAPPDATA%\NTE-AI`。
+
+### 方法二：EXE 下载不了或无法使用时，下载源码并用 PowerShell 运行
+
+1. 从 [Python 官网](https://www.python.org/downloads/windows/) 安装 **Python 3.12（64 位）**，安装时保留 Python Launcher（`py` 启动器）选项。
+2. [下载源码 ZIP](https://github.com/Tracy1-pixel/NTE-AI/archive/refs/heads/main.zip)，或在仓库点击 **Code → Download ZIP**。将 ZIP 完整解压，进入能看到 `app.py`、`requirements.txt` 和 `assets` 的文件夹。如果已经下载了这样的源码文件夹，可以直接使用。
+3. 在该文件夹空白处右键选择 **“在终端中打开”**，确认使用 PowerShell。Windows 10 可按住 **Shift** 再右键，选择 **“在此处打开 PowerShell 窗口”**。
+4. 先检查 Python 版本：
+
+```powershell
+py -3.12 --version
+```
+
+显示 `Python 3.12.x` 后，在同一窗口依次执行：
+
+```powershell
+py -3.12 -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+.\.venv\Scripts\python.exe app.py
+```
+
+首次安装依赖需要联网；看到依赖安装完成后，再执行最后一行打开中文界面。此方式直接使用虚拟环境中的 Python，无需执行 `Activate.ps1`，也无需修改 PowerShell 执行策略。
+
+如果提示找不到 `py` 或没有 Python 3.12，请回到第 1 步安装相应版本和 Launcher，重新打开 PowerShell 后再试。如果提示找不到 `requirements.txt` 或 `app.py`，请回到第 2 步中的源码文件夹再打开终端。
+
+以后启动时，在同一源码文件夹打开 PowerShell，只需执行：
+
+```powershell
+.\.venv\Scripts\python.exe app.py
+```
+
+**可选：为源码版创建桌面快捷方式。** 首次成功运行并关闭助手后，在同一源码文件夹的 PowerShell 中执行下面整段代码：
+
+```powershell
+$nteSourceRoot = (Get-Location).Path
+$nteShortcutShell = New-Object -ComObject WScript.Shell
+$nteDesktopPath = [Environment]::GetFolderPath('Desktop')
+$nteSourceShortcut = $nteShortcutShell.CreateShortcut((Join-Path $nteDesktopPath '异环助手（源码）.lnk'))
+$nteSourceShortcut.TargetPath = Join-Path $nteSourceRoot '.venv\Scripts\pythonw.exe'
+$nteSourceShortcut.Arguments = '"' + (Join-Path $nteSourceRoot 'app.py') + '"'
+$nteSourceShortcut.WorkingDirectory = $nteSourceRoot
+$nteSourceShortcut.Save()
+```
+
+之后双击桌面 **“异环助手（源码）”** 即可打开界面。这个快捷方式依赖当前源码目录，请保留该目录及其中的 `.venv` 文件夹。
+
+### 游戏准备与开始运行
 
 游戏须先在游戏设置中切换为**普通窗口模式**。新版将游戏**内容区固定为 1920×1080**，标题栏和边框另算；开始运行时自动调整所选窗口尺寸和位置。助手使用独立的深色控制台界面，显示窗口尺寸、运行阶段、营业额和完成 / 失败次数。
 
