@@ -11,6 +11,7 @@ from pathlib import Path
 
 import automation as engine
 import nte_workflow as workflow
+import nte_window
 
 
 def enable_dpi_awareness():
@@ -48,8 +49,26 @@ def self_test(report):
         root = tk.Tk()
         app = App(root)
         root.update()
+        if sys.platform == 'win32':
+            probe = tk.Toplevel(root)
+            probe.title('NTE Window Smoke')
+            probe.maxsize(4096, 2160)
+            probe.geometry('320x180+100+100')
+            root.update()
+            api = nte_window.Win32()
+            hwnd = int(api.u.GetAncestor(probe.winfo_id(), 2))
+            area = api.geometry(hwnd)
+            x, y, width, height = api.outer(hwnd)
+            api.resize(hwnd, x, y, 1920 + width - area.width, 1080 + height - area.height)
+            root.update()
+            resized = api.geometry(hwnd)
+            if (resized.width, resized.height) != nte_window.CLIENT_SIZE:
+                raise RuntimeError('Windows 内容区 1920×1080 调整测试失败')
+            if nte_window.choose_window(api, hwnd=hwnd) != hwnd:
+                raise RuntimeError('Windows 窗口选择测试失败')
+            probe.destroy()
         app.close()
-        data = {'status': 'passed', 'score': 1900, 'gui': 'passed', 'frozen': bool(getattr(sys, 'frozen', False))}
+        data = {'status': 'passed', 'score': 1900, 'gui': 'passed', 'window_geometry': 'passed', 'frozen': bool(getattr(sys, 'frozen', False))}
         code = 0
     except Exception as error:
         data, code = {'status': 'failed', 'error': str(error)}, 1
@@ -81,7 +100,16 @@ class App:
         self.config_button = ttk.Button(outer, text='① 查看七图预设 / 使用预设', command=self.configure)
         self.config_button.pack(fill='x', pady=5)
 
-        options = ttk.LabelFrame(outer, text='运行设置', padding=12)
+        target_row = ttk.Frame(outer)
+        target_row.pack(fill='x', pady=6)
+        ttk.Label(target_row, text='游戏窗口：').pack(side='left')
+        self.window_choice = tk.StringVar()
+        self.window_list = ttk.Combobox(target_row, textvariable=self.window_choice, state='readonly', width=50)
+        self.window_list.pack(side='left', fill='x', expand=True, padx=6)
+        self.window_refresh = ttk.Button(target_row, text='刷新窗口', command=self.refresh_windows)
+        self.window_refresh.pack(side='right')
+        self.window_choices = {}
+        options = ttk.LabelFrame(outer, text='运行设置 · 游戏内容区固定 1920×1080', padding=12)
         options.pack(fill='x', pady=10)
         self.fields = {}
         for i, (name, label) in enumerate((('click_interval', '点击间隔（秒）'), ('scan_interval', '识别间隔（秒）'))):
@@ -98,14 +126,34 @@ class App:
         ttk.Label(actions, text='运行中按 F8 停止').pack(side='right', padx=4)
         self.status = tk.StringVar(value='就绪：请打开图一的店长特供关卡选择页面。')
         ttk.Label(outer, textvariable=self.status, wraplength=700).pack(anchor='w', pady=6)
-        ttk.Label(outer, text='游戏需在主屏幕 16:9 全屏或无边框运行。检查或启动后切回游戏，F8 停止。', wraplength=700).pack(anchor='w', pady=4)
+        ttk.Label(outer, text='游戏先切换普通窗口模式；开始时调整内容区至 1920×1080。窗口须在主屏幕完整显示，F8 停止。', wraplength=700).pack(anchor='w', pady=4)
         self.preview_frame = ttk.Frame(outer)
         self.preview_frame.pack(fill='x', pady=8)
         self.preview_images = []
         self.logs = tk.Text(outer, height=9, state='disabled', wrap='word')
         self.logs.pack(fill='both', expand=True, pady=6)
         self.refresh()
+        self.refresh_windows()
         root.after(100, self.poll)
+
+    def refresh_windows(self):
+        try:
+            windows = [(handle, title) for handle, title in nte_window.Win32().windows()
+                       if '异环助手' not in title and 'NTE-AI' not in title]
+            self.window_choices = {f'{title} [{handle}]': (handle, title) for handle, title in windows}
+            self.window_list['values'] = list(self.window_choices)
+            saved = engine.load_config().get('window_title', '')
+            if self.window_choice.get() not in self.window_choices:
+                selected = next((label for label, (_, title) in self.window_choices.items() if saved and title == saved), '')
+                if not selected:
+                    try:
+                        handle = nte_window.choose_window(nte_window.Win32())
+                        selected = next(label for label, (candidate, _) in self.window_choices.items() if candidate == handle)
+                    except ValueError:
+                        pass
+                self.window_choice.set(selected)
+        except Exception as error:
+            self.log(f'窗口列表不可用：{error}')
 
     def refresh(self):
         try:
@@ -155,7 +203,7 @@ class App:
                 '⑦ 都市体力或领取消耗连续确认为 0 时停止。\n\n'
                 '运行中 F8 手动停止，没有总时长和轮数上限。\n'
                 '未知界面或运行错误时暂停操作，等待恢复；F8 停止。\n'
-                '预设来自你提供的截图，需要主屏幕 16:9 全屏或无边框画面。')
+                '游戏需先切换普通窗口模式；内容区固定为 1920×1080，位置自动跟随。')
         self.ttk.Label(window, text=text, wraplength=570, padding=20).pack()
         def use():
             try:
@@ -174,21 +222,26 @@ class App:
             c = workflow.settings(engine.load_config())
             for name, variable in self.fields.items():
                 c[name] = float(variable.get())
+            selected = self.window_choices.get(self.window_choice.get())
+            if not selected:
+                raise ValueError('请刷新并选择《异环》游戏窗口')
+            handle, c['window_title'] = selected
             workflow.settings(c)
             engine.save_config(c)
         except Exception as error:
             messagebox.showerror('请完成配置', str(error), parent=self.root)
             return
         self.busy = True
+        self.window_list.configure(state='disabled')
         self.stop.clear()
-        for button in (self.config_button, self.check_button, self.start_button):
+        for button in (self.config_button, self.check_button, self.start_button, self.window_refresh):
             button.configure(state='disabled')
         self.status.set('正在运行；F8 停止。' if mode == 'run' else '正在检查画面。')
         self.log('窗口最小化，5 秒后处理游戏画面，请切回游戏。')
         self.root.iconify()
-        threading.Thread(target=self.worker, args=(mode, c), daemon=True).start()
+        threading.Thread(target=self.worker, args=(mode, c, handle), daemon=True).start()
 
-    def worker(self, mode, config):
+    def worker(self, mode, config, handle):
         listener = None
         emit = lambda text: self.events.put(('log', text))
         try:
@@ -200,13 +253,13 @@ class App:
             listener.start()
             if self.stop.wait(5):
                 raise engine.Stopped('已取消')
-            desktop = workflow.DesktopBackend(self.stop)
+            desktop = workflow.DesktopBackend(self.stop, config['window_title'], handle, prepare=(mode == 'run'))
             if self.stop.is_set():
                 raise engine.Stopped('已停止')
             if mode == 'check':
                 scene = desktop.observe()
                 emit(f'当前界面：{scene.page}；营业额：{scene.score}；都市体力：{scene.city}；领取消耗：{scene.cost}')
-                emit('检查不会点击。开始运行必须是图一，未知界面会显示界面错误。')
+                emit('检查不会点击或改变窗口尺寸。内容区需为 1920×1080；开始运行必须是图一。')
             else:
                 workflow.Controller(config, desktop, self.stop, log=emit).run()
         except engine.Stopped as error:
@@ -226,7 +279,8 @@ class App:
                     self.log(payload)
                 else:
                     self.busy = False
-                    for button in (self.config_button, self.check_button, self.start_button):
+                    self.window_list.configure(state='readonly')
+                    for button in (self.config_button, self.check_button, self.start_button, self.window_refresh):
                         button.configure(state='normal')
                     self.status.set('已结束，请查看日志。')
                     self.root.deiconify()

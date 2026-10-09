@@ -403,7 +403,9 @@ def main():
         return
     import nte_workflow as workflow
     if args.command == 'check':
-        print(workflow.DesktopBackend().observe())
+        print('5 秒后检查，请切回已设为 1920×1080 的游戏窗口。')
+        time.sleep(5)
+        print(workflow.DesktopBackend(title=load_config().get('window_title', ''), prepare=False).observe())
         return
     from pynput import keyboard
     stop = threading.Event()
@@ -414,7 +416,7 @@ def main():
         print('5 秒后开始，请打开图一。F8 停止。')
         if stop.wait(5):
             return
-        desktop = workflow.DesktopBackend(stop)
+        desktop = workflow.DesktopBackend(stop, title=load_config().get('window_title', ''))
         try:
             workflow.Controller(load_config(), desktop, stop).run()
         except Stopped as error:

@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from automation import Stopped, parse_score
+from nte_window import GameWindow, Win32, choose_window
 
 REFERENCE = (2559, 1439)
 ASSETS = Path(getattr(sys, '_MEIPASS', Path(__file__).resolve().parent)) / 'assets' / 'pianist'
@@ -16,7 +17,7 @@ ASSETS = Path(getattr(sys, '_MEIPASS', Path(__file__).resolve().parent)) / 'asse
 
 def settings(saved=None):
     c = {'click_interval': 0.08, 'scan_interval': 0.25, 'confirm_frames': 3,
-         'transition_timeout': 30.0, 'workflow_version': 2}
+         'transition_timeout': 30.0, 'workflow_version': 3, 'window_title': ''}
     for key in c:
         if key != 'workflow_version' and key in (saved or {}):
             c[key] = saved[key]
@@ -25,6 +26,8 @@ def settings(saved=None):
             raise ValueError(f'{key} 必须是大于零的有限数值')
     if not isinstance(c['confirm_frames'], int) or c['confirm_frames'] < 2:
         raise ValueError('连续确认帧数至少为 2')
+    if not isinstance(c['window_title'], str):
+        raise ValueError('游戏窗口标题必须为文字')
     return c
 
 
@@ -181,7 +184,7 @@ class Controller:
 
 
 class ScreenReader:
-    """Normalize a full-screen 16:9 game to the supplied screenshots."""
+    """Normalize the game client image to the supplied screenshots."""
     def __init__(self):
         import cv2
         import numpy as np
@@ -227,28 +230,35 @@ class ScreenReader:
 
 
 class DesktopBackend:
-    def __init__(self, stop=None):
+    def __init__(self, stop=None, title='', hwnd=None, prepare=True):
         import pyautogui as pg
         self.pg = pg
         self.stop = stop
         pg.PAUSE = 0
         # F8 is the manual stop requested by the user; corners are not stop triggers.
         pg.FAILSAFE = False
+        api = Win32()
+        handle = choose_window(api, title, hwnd)
+        self.window = GameWindow(api, handle, tuple(pg.size()))
+        if prepare:
+            self.guard(stop_only=True)
+            self.window.resize()
+            self.guard(stop_only=True)
+            api.activate(handle)
+            time.sleep(0.3)
+        self.window.area()
         self.reader = ScreenReader()
-        self.size = tuple(pg.size())
-        if abs(self.size[0] / self.size[1] - REFERENCE[0] / REFERENCE[1]) > 0.04:
-            raise ValueError('请使用主屏幕 16:9 全屏或无边框游戏画面')
 
     def frame(self):
-        if tuple(self.pg.size()) != self.size:
-            raise ValueError('屏幕分辨率已改变，请按 F8 后重新启动')
-        return self.reader.cv.cvtColor(self.reader.np.array(self.pg.screenshot()), self.reader.cv.COLOR_RGB2BGR)
+        self.guard()
+        area = self.window.area()
+        return self.reader.cv.cvtColor(self.reader.np.array(self.pg.screenshot(region=area.region())), self.reader.cv.COLOR_RGB2BGR)
 
     def observe(self):
         return self.reader.inspect(self.frame())
 
     def point(self, x, y):
-        return round(x * self.size[0] / REFERENCE[0]), round(y * self.size[1] / REFERENCE[1])
+        return self.window.area().point(x, y, REFERENCE)
 
     def action(self, name):
         self.guard()
@@ -272,6 +282,9 @@ class DesktopBackend:
                 return True
         return False
 
-    def guard(self):
+    def guard(self, stop_only=False):
         if self.stop is not None and self.stop.is_set():
             raise Stopped('F8：已停止')
+        if not stop_only:
+            self.window.screen_size = tuple(self.pg.size())
+            self.window.area()
