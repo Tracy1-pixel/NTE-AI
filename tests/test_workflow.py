@@ -53,6 +53,10 @@ class Game:
         self.scene.selected = True
         return True
 
+    def find_cursor(self):
+        self.actions.append('find_cursor')
+        return True
+
 
 class WorkflowTests(unittest.TestCase):
     def make(self, game):
@@ -72,6 +76,35 @@ class WorkflowTests(unittest.TestCase):
         with self.assertRaisesRegex(Stopped, '界面错误'):
             controller.run()
         self.assertEqual(game.actions, [])
+
+    def test_no_cursor_pauses_before_any_movement_scroll_or_click(self):
+        class MissingCursor(Game):
+            def find_cursor(self):
+                self.actions.append('find_cursor')
+                return False
+        game = MissingCursor()
+        controller, _ = self.make(game)
+        reports = []
+        controller.report = reports.append
+        with self.assertRaisesRegex(Stopped, 'F8'):
+            controller.run()
+        self.assertTrue(game.actions)
+        self.assertEqual(set(game.actions), {'find_cursor'})
+        self.assertTrue(any(row['phase'] == '识别游戏光标' and row['state'] == 'paused' for row in reports))
+
+    def test_cursor_confirmation_precedes_scroll_selection_and_start(self):
+        class LateCursor(Game):
+            reads = iter([False, True, False, True, True])
+            def find_cursor(self):
+                found = next(self.reads, True)
+                self.actions.append('cursor_yes' if found else 'cursor_no')
+                return found
+        game = LateCursor(city=48)
+        controller, _ = self.make(game)
+        with self.assertRaisesRegex(Stopped, '都市体力为 0'):
+            controller.run()
+        self.assertEqual(game.actions[:5], ['cursor_no', 'cursor_yes', 'cursor_no', 'cursor_yes', 'cursor_yes'])
+        self.assertEqual(game.actions[5:8], ['scroll_bottom', 'select_level', 'start'])
 
     def test_home_select_ready_goal_claim_and_repeat_until_zero(self):
         game = Game()

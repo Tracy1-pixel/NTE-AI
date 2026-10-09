@@ -2,7 +2,8 @@
 from dataclasses import dataclass
 
 PHASES = {
-    'home': '确认初始界面', 'select': '选择钢琴家', 'selected': '准备开始营业',
+    'home': '确认初始界面', 'cursor': '识别游戏光标', 'scrolling': '滚动关卡栏',
+    'select': '选择钢琴家', 'selected': '准备开始营业',
     'starting': '等待营业开始', 'retrying': '重新挑战', 'playing': '连点锤子',
     'exiting': '退出并结算', 'retry_loading': '等待重新挑战', 'claiming': '领取奖励',
 }

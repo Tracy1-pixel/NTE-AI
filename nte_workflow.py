@@ -18,7 +18,7 @@ ASSETS = Path(getattr(sys, '_MEIPASS', Path(__file__).resolve().parent)) / 'asse
 
 def settings(saved=None):
     c = {'click_interval': 0.08, 'scan_interval': 0.25, 'confirm_frames': 3,
-         'transition_timeout': 30.0, 'workflow_version': 3, 'window_title': ''}
+         'transition_timeout': 30.0, 'workflow_version': 4, 'window_title': ''}
     for key in c:
         if key != 'workflow_version' and key in (saved or {}):
             c[key] = saved[key]
@@ -68,6 +68,8 @@ class Controller:
         if self.report:
             paused = bool(reason) or (scene is not None and scene.page == 'unknown')
             phase = '已暂停' if paused else PHASES.get(state, state)
+            if state == 'cursor' and scene is not None and scene.page == 'home':
+                phase = PHASES['cursor']
             if scene is not None and scene.page == 'ready' and state == 'playing':
                 phase = '倒计时连点'
             self.report({'phase': phase, 'state': 'paused' if paused else 'running',
@@ -109,7 +111,7 @@ class Controller:
         self.initial()
         state, since = 'home', self.clock()
         page_frames, zero_city, zero_cost, score_frames = {}, 0, 0, 0
-        scrolls = 0
+        scrolls, cursor_frames = 0, 0
         next_observe, scene = 0, None
         while True:
             self.check()
@@ -121,6 +123,8 @@ class Controller:
                     self.wait(self.c['click_interval'])
                     continue
                 scene = self.b.observe()
+                if state == 'cursor' and scene.page != 'home':
+                    cursor_frames = 0
                 self.publish(state, scene)
                 next_observe = self.clock() + self.c['scan_interval']
                 for page in ('home', 'success', 'failure'):
@@ -146,10 +150,21 @@ class Controller:
                     continue
 
                 if state == 'home' and scene.page == 'home' and page_frames['home'] >= self.c['confirm_frames']:
-                    scrolls = 0
-                    self.action('scroll_bottom')
-                    state, since = 'select', self.clock()
-                    self.message('图一：已滚动关卡栏，寻找 3-10 钢！琴！家！')
+                    state, since = 'cursor', self.clock()
+                    cursor_frames = 0
+                    self.message('图一已确认，先识别游戏光标；确认后才移动和滚动')
+                elif state == 'cursor' and scene.page == 'home':
+                    cursor_frames = cursor_frames + 1 if self.b.find_cursor() else 0
+                    if cursor_frames >= self.c['confirm_frames']:
+                        scrolls = 0
+                        self.publish('scrolling', scene)
+                        self.message('已识别游戏光标，移动到左侧关卡栏并向下滚动到底')
+                        self.action('scroll_bottom')
+                        state, since = 'select', self.clock()
+                        self.message('已识别游戏光标并滚动到底，OCR 寻找 3-10 钢！琴！家！')
+                    else:
+                        paused_reason = '等待确认游戏光标，请将鼠标置于游戏内容区'
+                        self.message(paused_reason + '；停止按钮 / F8 可停止')
                 elif state == 'select' and scene.page == 'home':
                     if self.b.select_level():
                         state, since = 'selected', self.clock()
@@ -196,6 +211,7 @@ class Controller:
                         state, since = 'claiming', self.clock()
                         self.message(f'图七：消耗 {scene.cost}，已点击领取奖励')
                 elif scene.page == 'unknown' or self.clock() - since > self.c['transition_timeout']:
+                    cursor_frames = 0
                     self.message('界面错误或页面切换未完成：暂停操作，等待正确界面；F8 停止')
                     paused_reason = '界面错误或页面切换未完成'
                 self.publish(state, scene, paused_reason)
@@ -273,6 +289,8 @@ class DesktopBackend:
             time.sleep(0.3)
         self.window.area()
         self.reader = ScreenReader()
+        from nte_cursor import CursorDetector
+        self.cursor_detector = CursorDetector()
 
     def frame(self):
         self.guard()
@@ -287,14 +305,52 @@ class DesktopBackend:
     def point(self, x, y):
         return self.window.area().point(x, y, REFERENCE)
 
+    def find_cursor(self):
+        from nte_cursor import windows_cursor_bitmap
+        frame = self.frame()
+        area = self.window.area()
+        x, y = self.pg.position()
+        if self.cursor_detector.near_pointer(frame, x - area.x, y - area.y):
+            return True
+        cursor = windows_cursor_bitmap()
+        if cursor:
+            bitmap, (x, y) = cursor
+            if area.x <= x < area.x + area.width and area.y <= y < area.y + area.height:
+                return self.cursor_detector.matches(bitmap)
+        return False
+
+    def scroll_bottom(self):
+        self.pg.moveTo(*self.point(230, 1060), duration=0.2)
+        cv = self.reader.cv
+        def menu():
+            frame = cv.resize(self.frame(), REFERENCE)
+            return cv.cvtColor(frame[140:1390, :455], cv.COLOR_BGR2GRAY)
+        previous, stable = menu(), 0
+        for _ in range(30):
+            self.guard()
+            self.pg.scroll(-8)
+            if self.stop is not None:
+                if self.stop.wait(0.2):
+                    raise Stopped('已停止（停止按钮 / F8）')
+            else:
+                time.sleep(0.2)
+            current = menu()
+            stable = stable + 1 if float(cv.absdiff(previous, current).mean()) < 1.0 else 0
+            previous = current
+            if stable >= 2:
+                return
+        raise ValueError('关卡栏仍在滚动，尚未确认到底；等待后重试')
+
     def action(self, name):
         self.guard()
         points = {'start': (2290, 1340), 'hammer': (125, 610), 'exit': (65, 64),
                   'claim': (1545, 1115), 'retry': (1545, 1115)}
         if name == 'scroll_bottom':
-            self.pg.moveTo(*self.point(230, 1060))
-            self.pg.scroll(-15)
+            self.scroll_bottom()
         else:
+            if name != 'hammer':
+                self.pg.moveTo(*self.point(*points[name]), duration=0.15)
+                self.guard()
             self.pg.click(*self.point(*points[name]))
 
     def select_level(self):
@@ -304,6 +360,8 @@ class DesktopBackend:
             if confidence >= 0.65 and self.reader.is_level(text):
                 x = sum(p[0] for p in box) / 4
                 y = sum(p[1] for p in box) / 4 + 140
+                self.guard()
+                self.pg.moveTo(*self.point(x, y), duration=0.15)
                 self.guard()
                 self.pg.click(*self.point(x, y))
                 return True

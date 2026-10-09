@@ -34,6 +34,16 @@ def self_test(report):
         from rapidocr_onnxruntime import RapidOCR
         if sys.platform == 'win32':
             from pynput import keyboard
+            import ctypes as ct
+            from ctypes import wintypes as wt
+            from nte_cursor import windows_cursor_bitmap
+            user32 = ct.WinDLL('user32')
+            user32.LoadCursorW.argtypes = [wt.HINSTANCE, ct.c_void_p]
+            user32.LoadCursorW.restype = wt.HANDLE
+            handle = user32.LoadCursorW(None, ct.c_void_p(32512))
+            rendered = windows_cursor_bitmap(handle)
+            if not handle or rendered is None or not rendered[0].any():
+                raise RuntimeError('Windows 光标图形读取自检失败')
         image = np.zeros((100, 420, 3), dtype=np.uint8)
         cv2.putText(image, '1900/1900', (10, 65), cv2.FONT_HERSHEY_SIMPLEX, 1.8, (255, 255, 255), 3)
         result, _ = RapidOCR(intra_op_num_threads=2, inter_op_num_threads=2)(image)
@@ -103,7 +113,7 @@ def self_test(report):
             area = api.geometry(int(api.u.GetAncestor(root.winfo_id(), 2)))
             pyautogui.screenshot(region=area.region()).save(str(Path(report).with_suffix('.png')))
         app.close()
-        data = {'status': 'passed', 'score': 1900, 'gui': 'passed', 'stop_button': 'passed', 'overlay': 'passed', 'window_geometry': 'passed', 'frozen': bool(getattr(sys, 'frozen', False))}
+        data = {'status': 'passed', 'score': 1900, 'gui': 'passed', 'cursor_capture': 'passed', 'stop_button': 'passed', 'overlay': 'passed', 'window_geometry': 'passed', 'frozen': bool(getattr(sys, 'frozen', False))}
         code = 0
     except Exception as error:
         data, code = {'status': 'failed', 'error': str(error)}, 1
@@ -121,7 +131,7 @@ class App:
         self.busy = False
         self.runtime = RuntimeStatus()
         self.overlay = None
-        root.title('异环助手 · 店长特供 1.3')
+        root.title('异环助手 · 店长特供 1.4')
         root.geometry('980x820')
         root.minsize(920, 760)
         root.configure(bg='#0b1220')
@@ -158,8 +168,8 @@ class App:
         ttk.Button(sidebar, text='控制台', style='Accent.TButton', command=lambda: root.deiconify()).pack(fill='x', pady=5)
         self.config_button = ttk.Button(sidebar, text='七图流程说明', command=self.configure)
         self.config_button.pack(fill='x', pady=5)
-        tk.Label(sidebar, text='01  识别初始界面\n\n02  选择钢琴家\n\n03  锤子连点\n\n04  结算 / 重试', bg='#101b31', fg='#8fa1bc', justify='left', font=('Microsoft YaHei UI', 10), anchor='nw').pack(fill='x', pady=30)
-        tk.Label(sidebar, text='窗口模式\n1920 × 1080\n\nv1.3.0', bg='#101b31', fg='#61738d', justify='left', font=('Segoe UI', 10), anchor='sw').pack(side='bottom', fill='x')
+        tk.Label(sidebar, text='01  识别初始界面\n\n02  光标识别 / 选关\n\n03  锤子连点\n\n04  结算 / 重试', bg='#101b31', fg='#8fa1bc', justify='left', font=('Microsoft YaHei UI', 10), anchor='nw').pack(fill='x', pady=30)
+        tk.Label(sidebar, text='窗口模式\n1920 × 1080\n\nv1.4.0', bg='#101b31', fg='#61738d', justify='left', font=('Segoe UI', 10), anchor='sw').pack(side='bottom', fill='x')
 
         outer = ttk.Frame(root, padding=(24, 22))
         outer.pack(fill='both', expand=True)
@@ -305,9 +315,9 @@ class App:
         from tkinter import messagebox
         window = self.tk.Toplevel(self.root)
         window.title('七图流程预设')
-        window.geometry('620x400')
+        window.geometry('640x480')
         text = ('① 图一：必须是店长特供关卡选择页面。\n'
-                '② 自动滚动左侧关卡栏，找到 3-10 钢！琴！家！，点击开始营业。\n'
+                '② 先识别游戏光标，移动到左侧滚动到底，OCR 找到并点击 3-10；确认选中后移动到右下角点击开始营业。\n'
                 '③ 图三倒计时与图四营业阶段：连续点击左侧锤子。\n'
                 '④ 营业额达到 1900：点击左上退出图标，等待图七。\n'
                 '⑤ 图七：读取领取下方消耗，非零时领取，返回图一。\n'
