@@ -92,6 +92,33 @@ class WorkflowTests(unittest.TestCase):
             controller.run()
         self.assertNotIn('claim', game.actions)
 
+    def test_live_status_counts_final_round_before_zero_stamina_stop(self):
+        controller, _ = self.make(Game())
+        reports = []
+        controller.report = reports.append
+        with self.assertRaisesRegex(Stopped, '都市体力为 0'):
+            controller.run()
+        self.assertEqual(reports[-1]['completed'], 2)
+        self.assertTrue(any(row['score'] == 1927 for row in reports))
+        self.assertTrue(any(row['phase'] == '领取奖励' for row in reports))
+
+    def test_live_status_reports_third_failure_before_stopping(self):
+        controller, _ = self.make(Game(outcomes=['failure'] * 3))
+        reports = []
+        controller.report = reports.append
+        with self.assertRaisesRegex(Stopped, '连续三次'):
+            controller.run()
+        self.assertEqual(reports[-1]['failures'], 3)
+
+    def test_live_status_pauses_on_unknown_and_resumes_on_valid_scene(self):
+        controller, _ = self.make(Game())
+        reports = []
+        controller.report = reports.append
+        controller.publish('playing', Scene('unknown'))
+        controller.publish('playing', Scene('playing', score=1200))
+        self.assertEqual([row['state'] for row in reports], ['paused', 'running'])
+        self.assertEqual(reports[-1]['score'], 1200)
+
     def test_zero_city_at_start_does_not_scroll_or_click(self):
         game = Game(city=0)
         controller, _ = self.make(game)

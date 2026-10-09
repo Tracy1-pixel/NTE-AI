@@ -43,3 +43,8 @@ jobs:
           name: NTE-AI-Windows-installer
           path: dist/installer/*.exe
           if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        with:
+          name: NTE-AI-GUI-preview
+          path: installed-test.png
+          if-no-files-found: error

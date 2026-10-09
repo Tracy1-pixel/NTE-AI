@@ -12,6 +12,7 @@ from pathlib import Path
 import automation as engine
 import nte_workflow as workflow
 import nte_window
+from nte_status import RuntimeStatus
 
 
 def enable_dpi_awareness():
@@ -49,6 +50,17 @@ def self_test(report):
         root = tk.Tk()
         app = App(root)
         root.update()
+        app.busy = True
+        app.stop_button.configure(state='normal')
+        app.stop_button.invoke()
+        if not app.stop.is_set() or app.runtime.phase != '正在停止':
+            raise RuntimeError('GUI 停止按钮测试失败')
+        app.busy = False
+        app.stop.clear()
+        app.stop_button.configure(state='disabled')
+        app.runtime = RuntimeStatus()
+        app.paint_status()
+        root.update()
         if sys.platform == 'win32':
             probe = tk.Toplevel(root)
             probe.title('NTE Window Smoke')
@@ -66,9 +78,32 @@ def self_test(report):
                 raise RuntimeError('Windows 内容区 1920×1080 调整测试失败')
             if nte_window.choose_window(api, hwnd=hwnd) != hwnd:
                 raise RuntimeError('Windows 窗口选择测试失败')
+            from nte_status import overlay_position
+            app.overlay.attach(hwnd)
+            api.activate(hwnd)
+            root.update()
+            foreground = api.u.GetForegroundWindow()
+            area = api.geometry(hwnd)
+            app.overlay.refresh(RuntimeStatus(phase='连点锤子', state='running', score=1927))
+            # Native tests do not require the runner desktop to fit the game window.
+            app.overlay.shield.show(*overlay_position(area))
+            root.update_idletasks()
+            styles = api.u.GetWindowLongPtrW(app.overlay.hwnd, -20)
+            if styles & (0x20 | 0x08000000) != (0x20 | 0x08000000):
+                raise RuntimeError('状态栏点击穿透 / 不抢焦点测试失败')
+            if api.u.GetForegroundWindow() != foreground:
+                raise RuntimeError('状态栏抢占了前台焦点')
+            if api.outer(app.overlay.hwnd)[:2] != overlay_position(area):
+                raise RuntimeError('状态栏未跟随游戏左下角')
+            app.overlay.hide()
             probe.destroy()
+            # Save a preview of the actual packaged GUI for the build artifacts.
+            root.deiconify()
+            root.update()
+            area = api.geometry(int(api.u.GetAncestor(root.winfo_id(), 2)))
+            pyautogui.screenshot(region=area.region()).save(str(Path(report).with_suffix('.png')))
         app.close()
-        data = {'status': 'passed', 'score': 1900, 'gui': 'passed', 'window_geometry': 'passed', 'frozen': bool(getattr(sys, 'frozen', False))}
+        data = {'status': 'passed', 'score': 1900, 'gui': 'passed', 'stop_button': 'passed', 'overlay': 'passed', 'window_geometry': 'passed', 'frozen': bool(getattr(sys, 'frozen', False))}
         code = 0
     except Exception as error:
         data, code = {'status': 'failed', 'error': str(error)}, 1
@@ -84,57 +119,134 @@ class App:
         self.events = queue.Queue()
         self.stop = threading.Event()
         self.busy = False
-        root.title('异环助手 · 店长特供')
-        root.geometry('760x700')
-        root.minsize(720, 650)
+        self.runtime = RuntimeStatus()
+        self.overlay = None
+        root.title('异环助手 · 店长特供 1.3')
+        root.geometry('980x820')
+        root.minsize(920, 760)
+        root.configure(bg='#0b1220')
         root.protocol('WM_DELETE_WINDOW', self.close)
         style = ttk.Style(root)
-        if 'vista' in style.theme_names():
-            style.theme_use('vista')
-        outer = ttk.Frame(root, padding=20)
-        outer.pack(fill='both', expand=True)
-        ttk.Label(outer, text='店长特供 · 都市体力助手', font=('Microsoft YaHei UI', 20, 'bold')).pack(anchor='w')
-        ttk.Label(outer, text='初始界面 → 钢琴家 → 锤子连点 → 点击退出图标 / 领取 → 循环').pack(anchor='w', pady=8)
-        self.summary = tk.StringVar()
-        ttk.Label(outer, textvariable=self.summary, wraplength=700).pack(anchor='w', pady=8)
-        self.config_button = ttk.Button(outer, text='① 查看七图预设 / 使用预设', command=self.configure)
-        self.config_button.pack(fill='x', pady=5)
+        style.theme_use('clam')
+        style.configure('.', font=('Microsoft YaHei UI', 9))
+        style.configure('TFrame', background='#0b1220')
+        style.configure('TLabel', background='#0b1220', foreground='#bbcee6')
+        style.configure('Title.TLabel', font=('Microsoft YaHei UI', 24, 'bold'), foreground='#eef5ff')
+        style.configure('Muted.TLabel', foreground='#8fa1bc')
+        style.configure('Card.TFrame', background='#142139')
+        style.configure('Card.TLabel', background='#142139', foreground='#8fa1bc')
+        style.configure('Value.TLabel', background='#142139', foreground='#eef5ff', font=('Microsoft YaHei UI', 13, 'bold'))
+        style.configure('TButton', background='#24364f', foreground='#eef5ff', borderwidth=0, padding=(13, 9))
+        style.map('TButton', background=[('active', '#314967'), ('disabled', '#18243a')], foreground=[('disabled', '#61738d')])
+        style.configure('Accent.TButton', background='#42ddbc', foreground='#09261f', font=('Microsoft YaHei UI', 10, 'bold'))
+        style.map('Accent.TButton', background=[('active', '#6ceacd'), ('disabled', '#254740')])
+        style.configure('Stop.TButton', background='#66303e', foreground='#ffc5cd')
+        style.map('Stop.TButton', background=[('active', '#824051'), ('disabled', '#241f2b')])
+        style.configure('TEntry', fieldbackground='#142139', foreground='#eef5ff', insertcolor='#eef5ff', bordercolor='#24364f', padding=6)
+        style.configure('TCombobox', fieldbackground='#142139', background='#24364f', foreground='#eef5ff', arrowcolor='#42ddbc', padding=6)
+        style.map('TCombobox', fieldbackground=[('readonly', '#142139')], foreground=[('readonly', '#eef5ff'), ('disabled', '#61738d')])
+        style.configure('TLabelframe', background='#0b1220', bordercolor='#24364f')
+        style.configure('TLabelframe.Label', background='#0b1220', foreground='#8fa1bc')
+        root.option_add('*TCombobox*Listbox.background', '#142139')
+        root.option_add('*TCombobox*Listbox.foreground', '#eef5ff')
 
-        target_row = ttk.Frame(outer)
-        target_row.pack(fill='x', pady=6)
-        ttk.Label(target_row, text='游戏窗口：').pack(side='left')
+        sidebar = tk.Frame(root, bg='#101b31', width=184, padx=18, pady=26)
+        sidebar.pack(side='left', fill='y')
+        sidebar.pack_propagate(False)
+        tk.Label(sidebar, text='NTE', bg='#101b31', fg='#42ddbc', font=('Segoe UI', 30, 'bold'), anchor='w').pack(fill='x')
+        tk.Label(sidebar, text='异环助手', bg='#101b31', fg='#eef5ff', font=('Microsoft YaHei UI', 17, 'bold'), anchor='w').pack(fill='x', pady=(4, 30))
+        ttk.Button(sidebar, text='控制台', style='Accent.TButton', command=lambda: root.deiconify()).pack(fill='x', pady=5)
+        self.config_button = ttk.Button(sidebar, text='七图流程说明', command=self.configure)
+        self.config_button.pack(fill='x', pady=5)
+        tk.Label(sidebar, text='01  识别初始界面\n\n02  选择钢琴家\n\n03  锤子连点\n\n04  结算 / 重试', bg='#101b31', fg='#8fa1bc', justify='left', font=('Microsoft YaHei UI', 10), anchor='nw').pack(fill='x', pady=30)
+        tk.Label(sidebar, text='窗口模式\n1920 × 1080\n\nv1.3.0', bg='#101b31', fg='#61738d', justify='left', font=('Segoe UI', 10), anchor='sw').pack(side='bottom', fill='x')
+
+        outer = ttk.Frame(root, padding=(24, 22))
+        outer.pack(fill='both', expand=True)
+        header = ttk.Frame(outer)
+        header.pack(fill='x')
+        ttk.Label(header, text='店长特供', style='Title.TLabel').pack(side='left')
+        self.badge = ttk.Label(header, text='● 就绪', foreground='#42ddbc')
+        self.badge.pack(side='right', pady=10)
+        ttk.Label(outer, text='钢琴家自动循环  /  从初始界面开始', style='Muted.TLabel').pack(anchor='w', pady=(6, 16))
+
+        self.metric_size = tk.StringVar(value='未绑定')
+        self.metric_phase = tk.StringVar(value='就绪')
+        self.metric_score = tk.StringVar(value='— / 1,900')
+        self.metric_runs = tk.StringVar(value='0 轮 · 0/3 失败')
+        metrics = ttk.Frame(outer)
+        metrics.pack(fill='x', pady=(0, 14))
+        for column, (title, value) in enumerate((('游戏内容区', self.metric_size), ('运行阶段', self.metric_phase), ('营业额', self.metric_score), ('本次进度', self.metric_runs))):
+            metrics.columnconfigure(column, weight=1)
+            card = ttk.Frame(metrics, style='Card.TFrame', padding=(10, 12))
+            card.grid(row=0, column=column, sticky='nsew', padx=(0, 6 if column < 3 else 0))
+            ttk.Label(card, text=title, style='Card.TLabel').pack(anchor='w')
+            ttk.Label(card, textvariable=value, style='Value.TLabel').pack(anchor='w', pady=(7, 0))
+
+        target = ttk.LabelFrame(outer, text='绑定游戏窗口', padding=12)
+        target.pack(fill='x', pady=(0, 10))
+        target_row = ttk.Frame(target)
+        target_row.pack(fill='x')
         self.window_choice = tk.StringVar()
-        self.window_list = ttk.Combobox(target_row, textvariable=self.window_choice, state='readonly', width=50)
-        self.window_list.pack(side='left', fill='x', expand=True, padx=6)
-        self.window_refresh = ttk.Button(target_row, text='刷新窗口', command=self.refresh_windows)
+        self.window_list = ttk.Combobox(target_row, textvariable=self.window_choice, state='readonly', width=40)
+        self.window_list.pack(side='left', fill='x', expand=True, padx=(0, 8))
+        self.window_refresh = ttk.Button(target_row, text='刷新', command=self.refresh_windows)
         self.window_refresh.pack(side='right')
         self.window_choices = {}
-        options = ttk.LabelFrame(outer, text='运行设置 · 游戏内容区固定 1920×1080', padding=12)
-        options.pack(fill='x', pady=10)
+        ttk.Label(target, text='游戏先切换普通窗口模式；开始时自动调整内容区至 1920×1080。', style='Muted.TLabel', wraplength=650).pack(anchor='w', pady=(8, 0))
+
+        options = ttk.LabelFrame(outer, text='运行参数', padding=12)
+        options.pack(fill='x', pady=(0, 10))
         self.fields = {}
-        for i, (name, label) in enumerate((('click_interval', '点击间隔（秒）'), ('scan_interval', '识别间隔（秒）'))):
-            ttk.Label(options, text=label).grid(row=i // 2, column=(i % 2) * 2, padx=8, pady=6, sticky='w')
+        for column, (name, label) in enumerate((('click_interval', '点击间隔 / 秒'), ('scan_interval', '识别间隔 / 秒'))):
+            ttk.Label(options, text=label).grid(row=0, column=column*2, padx=(0, 10), sticky='w')
             variable = tk.StringVar()
             self.fields[name] = variable
-            ttk.Entry(options, textvariable=variable, width=12).grid(row=i // 2, column=(i % 2) * 2 + 1, padx=8, pady=6)
+            ttk.Entry(options, textvariable=variable, width=10).grid(row=0, column=column*2+1, padx=(0, 18))
+
         actions = ttk.Frame(outer)
-        actions.pack(fill='x', pady=8)
-        self.check_button = ttk.Button(actions, text='② 检查当前画面', command=lambda: self.launch('check'))
-        self.check_button.pack(side='left', padx=4)
-        self.start_button = ttk.Button(actions, text='③ 保存设置并开始', command=lambda: self.launch('run'))
-        self.start_button.pack(side='left', padx=4)
-        ttk.Label(actions, text='运行中按 F8 停止').pack(side='right', padx=4)
-        self.status = tk.StringVar(value='就绪：请打开图一的店长特供关卡选择页面。')
-        ttk.Label(outer, textvariable=self.status, wraplength=700).pack(anchor='w', pady=6)
-        ttk.Label(outer, text='游戏先切换普通窗口模式；开始时调整内容区至 1920×1080。窗口须在主屏幕完整显示，F8 停止。', wraplength=700).pack(anchor='w', pady=4)
+        actions.pack(fill='x', pady=(3, 8))
+        self.start_button = ttk.Button(actions, text='开始运行', style='Accent.TButton', command=lambda: self.launch('run'))
+        self.start_button.pack(side='left', padx=(0, 8))
+        self.stop_button = ttk.Button(actions, text='停止', style='Stop.TButton', command=self.request_stop, state='disabled')
+        self.stop_button.pack(side='left', padx=(0, 8))
+        self.check_button = ttk.Button(actions, text='检查画面', command=lambda: self.launch('check'))
+        self.check_button.pack(side='left')
+        ttk.Label(actions, text='F8  快捷停止', style='Muted.TLabel').pack(side='right')
+        self.status = tk.StringVar(value='准备就绪，请打开图一的店长特供界面。')
+        ttk.Label(outer, textvariable=self.status, wraplength=680).pack(anchor='w', pady=(3, 7))
+        self.summary = tk.StringVar()
+        ttk.Label(outer, textvariable=self.summary, wraplength=680, style='Muted.TLabel').pack(anchor='w')
         self.preview_frame = ttk.Frame(outer)
-        self.preview_frame.pack(fill='x', pady=8)
+        self.preview_frame.pack(fill='x', pady=10)
         self.preview_images = []
-        self.logs = tk.Text(outer, height=9, state='disabled', wrap='word')
-        self.logs.pack(fill='both', expand=True, pady=6)
+        ttk.Label(outer, text='运行记录', foreground='#eef5ff').pack(anchor='w', pady=(4, 5))
+        log_frame = ttk.Frame(outer)
+        log_frame.pack(fill='both', expand=True)
+        self.logs = tk.Text(log_frame, height=6, state='disabled', wrap='word', bg='#101b31', fg='#bbcee6', insertbackground='#eef5ff', relief='flat', padx=12, pady=8, font=('Microsoft YaHei UI', 9))
+        self.logs.pack(side='left', fill='both', expand=True)
+        scrollbar = ttk.Scrollbar(log_frame, command=self.logs.yview)
+        scrollbar.pack(side='right', fill='y')
+        self.logs.configure(yscrollcommand=scrollbar.set)
+        if sys.platform == 'win32':
+            from nte_overlay import Overlay
+            self.overlay = Overlay(root, nte_window.Win32())
         self.refresh()
         self.refresh_windows()
         root.after(100, self.poll)
+
+    def request_stop(self):
+        if self.busy:
+            self.stop.set()
+            self.runtime.apply({'phase': '正在停止', 'state': 'paused', 'details': '等待当前识别结束'})
+            self.paint_status()
+
+    def paint_status(self):
+        self.badge.configure(text='● ' + self.runtime.phase, foreground=self.runtime.color)
+        self.metric_phase.set(self.runtime.phase)
+        self.metric_score.set(self.runtime.score_text)
+        self.metric_runs.set(f'{self.runtime.completed} 轮 · {self.runtime.failures}/3 失败')
+        self.status.set(self.runtime.details)
 
     def refresh_windows(self):
         try:
@@ -201,7 +313,7 @@ class App:
                 '⑤ 图七：读取领取下方消耗，非零时领取，返回图一。\n'
                 '⑥ 图五：点击重新挑战，直接等待倒计时；连续失败三次停止。\n'
                 '⑦ 都市体力或领取消耗连续确认为 0 时停止。\n\n'
-                '运行中 F8 手动停止，没有总时长和轮数上限。\n'
+                '停止按钮 / F8 手动停止，没有总时长和轮数上限。\n'
                 '未知界面或运行错误时暂停操作，等待恢复；F8 停止。\n'
                 '游戏需先切换普通窗口模式；内容区固定为 1920×1080，位置自动跟随。')
         self.ttk.Label(window, text=text, wraplength=570, padding=20).pack()
@@ -234,9 +346,13 @@ class App:
         self.busy = True
         self.window_list.configure(state='disabled')
         self.stop.clear()
+        self.runtime = RuntimeStatus(phase='准备运行' if mode == 'run' else '检查画面', state='starting', details='5 秒后处理游戏窗口，请切回游戏')
+        self.paint_status()
+        self.stop_button.configure(state='normal')
+        if self.overlay:
+            self.overlay.attach(handle)
         for button in (self.config_button, self.check_button, self.start_button, self.window_refresh):
             button.configure(state='disabled')
-        self.status.set('正在运行；F8 停止。' if mode == 'run' else '正在检查画面。')
         self.log('窗口最小化，5 秒后处理游戏画面，请切回游戏。')
         self.root.iconify()
         threading.Thread(target=self.worker, args=(mode, c, handle), daemon=True).start()
@@ -253,7 +369,7 @@ class App:
             listener.start()
             if self.stop.wait(5):
                 raise engine.Stopped('已取消')
-            desktop = workflow.DesktopBackend(self.stop, config['window_title'], handle, prepare=(mode == 'run'))
+            desktop = workflow.DesktopBackend(self.stop, config['window_title'], handle, prepare=(mode == 'run'), capture_shield=self.overlay.shield if self.overlay else None)
             if self.stop.is_set():
                 raise engine.Stopped('已停止')
             if mode == 'check':
@@ -261,11 +377,13 @@ class App:
                 emit(f'当前界面：{scene.page}；营业额：{scene.score}；都市体力：{scene.city}；领取消耗：{scene.cost}')
                 emit('检查不会点击或改变窗口尺寸。内容区需为 1920×1080；开始运行必须是图一。')
             else:
-                workflow.Controller(config, desktop, self.stop, log=emit).run()
+                workflow.Controller(config, desktop, self.stop, log=emit, report=lambda data: self.events.put(('runtime', data))).run()
         except engine.Stopped as error:
             emit(str(error))
+            self.events.put(('runtime', {'phase': '已停止', 'state': 'stopped', 'details': str(error)}))
         except Exception as error:
             emit(f'已停止：{error}')
+            self.events.put(('runtime', {'phase': '运行失败', 'state': 'error', 'details': str(error)}))
         finally:
             if listener:
                 listener.stop()
@@ -277,22 +395,40 @@ class App:
                 kind, payload = self.events.get_nowait()
                 if kind == 'log':
                     self.log(payload)
+                elif kind == 'runtime':
+                    self.runtime.apply(payload)
+                    self.paint_status()
                 else:
                     self.busy = False
+                    self.stop_button.configure(state='disabled')
+                    if self.runtime.state in ('running', 'starting'):
+                        self.runtime.apply({'phase': '已结束', 'state': 'stopped', 'details': '当前任务已结束，请查看运行记录'})
+                    self.paint_status()
+                    if self.overlay:
+                        self.overlay.hide()
                     self.window_list.configure(state='readonly')
                     for button in (self.config_button, self.check_button, self.start_button, self.window_refresh):
                         button.configure(state='normal')
-                    self.status.set('已结束，请查看日志。')
                     self.root.deiconify()
         except queue.Empty:
             pass
+        if self.busy and self.overlay:
+            try:
+                area = self.overlay.refresh(self.runtime)
+                if area:
+                    self.metric_size.set(f'{area.width} × {area.height}')
+            except Exception as error:
+                self.overlay.hide()
+                self.log(f'状态栏显示异常：{error}')
         self.root.after(100, self.poll)
 
     def close(self):
         if self.busy:
             from tkinter import messagebox
-            messagebox.showinfo('正在运行', '请先按 F8 停止，再关闭窗口。', parent=self.root)
+            messagebox.showinfo('正在运行', '请先点击停止或按 F8，再关闭窗口。', parent=self.root)
             return
+        if self.overlay:
+            self.overlay.close()
         self.root.destroy()
 
 

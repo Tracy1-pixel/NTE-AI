@@ -43,6 +43,8 @@ class Win32:
             'GetClientRect': ([wintypes.HWND, ctypes.POINTER(wintypes.RECT)], wintypes.BOOL),
             'ClientToScreen': ([wintypes.HWND, ctypes.POINTER(wintypes.POINT)], wintypes.BOOL),
             'GetWindowLongPtrW': ([wintypes.HWND, ctypes.c_int], ctypes.c_ssize_t),
+            'SetWindowLongPtrW': ([wintypes.HWND, ctypes.c_int, ctypes.c_ssize_t], ctypes.c_ssize_t),
+            'SetWindowDisplayAffinity': ([wintypes.HWND, wintypes.DWORD], wintypes.BOOL),
             'GetForegroundWindow': ([], wintypes.HWND),
             'GetAncestor': ([wintypes.HWND, wintypes.UINT], wintypes.HWND),
             'ShowWindow': ([wintypes.HWND, ctypes.c_int], wintypes.BOOL),
@@ -104,6 +106,34 @@ class Win32:
 
     def activate(self, hwnd):
         self.u.SetForegroundWindow(hwnd)
+
+    def configure_overlay(self, hwnd):
+        flags = self.u.GetWindowLongPtrW(hwnd, -20)
+        self.u.SetWindowLongPtrW(hwnd, -20, flags | 0x80000 | 0x20 | 0x08000000 | 0x80)
+        actual = self.u.GetWindowLongPtrW(hwnd, -20)
+        if actual & (0x20 | 0x08000000) != (0x20 | 0x08000000):
+            raise RuntimeError('无法启用状态栏点击穿透')
+
+    def overlay_owner(self, hwnd, owner):
+        self.u.SetWindowLongPtrW(hwnd, -8, owner)
+
+    def exclude_from_capture(self, hwnd):
+        if sys.getwindowsversion().build < 19041:
+            return False
+        return bool(self.u.SetWindowDisplayAffinity(hwnd, 0x11))
+
+    def position_overlay(self, hwnd, x, y, width, height):
+        if not self.u.SetWindowPos(hwnd, -1, x, y, width, height, 0x0010 | 0x0040):
+            raise RuntimeError('无法显示状态栏')
+
+    def hide(self, hwnd):
+        self.u.ShowWindow(hwnd, 0)
+
+    def flush_compositor(self):
+        try:
+            self.ct.WinDLL('dwmapi').DwmFlush()
+        except OSError:
+            pass
 
 
 class GameWindow:

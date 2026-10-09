@@ -1,4 +1,4 @@
-param([string]$Version = "1.2.0")
+param([string]$Version = "1.3.0")
 $ErrorActionPreference = "Stop"
 Set-Location (Split-Path $PSScriptRoot -Parent)
 python -m PyInstaller --noconfirm --clean --windowed --onedir --name NTE-AI --add-data "assets;assets" --collect-all rapidocr_onnxruntime --collect-all onnxruntime --collect-all pyautogui --collect-all pynput app.py 2>&1 | Tee-Object -FilePath pyinstaller-build.log
@@ -30,6 +30,9 @@ if ($process.ExitCode -ne 0) { throw "Installer smoke test failed" }
 $shortcut = Join-Path ([Environment]::GetFolderPath("Desktop")) "异环助手.lnk"
 if (!(Test-Path $shortcut)) { throw "Desktop shortcut was not created" }
 $process = Start-Process -FilePath (Join-Path $installDir "NTE-AI.exe") -ArgumentList @("--self-test", "installed-test.json") -Wait -PassThru
-if ($process.ExitCode -ne 0) { throw "Installed application smoke test failed" }
+if ($process.ExitCode -ne 0) {
+    if (Test-Path installed-test.json) { Write-Output "::error::Installed smoke test: $(Get-Content installed-test.json -Raw)" }
+    throw "Installed application smoke test failed"
+}
 $report = Get-Content installed-test.json -Raw | ConvertFrom-Json
-if ($report.status -ne "passed" -or $report.gui -ne "passed") { throw "Installed GUI/OCR test failed" }
+if ($report.status -ne "passed" -or $report.gui -ne "passed" -or $report.overlay -ne "passed" -or $report.stop_button -ne "passed") { throw "Installed GUI/OCR/overlay test failed" }

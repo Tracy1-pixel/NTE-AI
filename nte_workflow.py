@@ -10,6 +10,7 @@ from pathlib import Path
 
 from automation import Stopped, parse_score
 from nte_window import GameWindow, Win32, choose_window
+from nte_status import PHASES
 
 REFERENCE = (2559, 1439)
 ASSETS = Path(getattr(sys, '_MEIPASS', Path(__file__).resolve().parent)) / 'assets' / 'pianist'
@@ -55,16 +56,28 @@ class Scene:
 
 
 class Controller:
-    def __init__(self, config, backend, stop, clock=time.monotonic, sleep=time.sleep, log=print):
+    def __init__(self, config, backend, stop, clock=time.monotonic, sleep=time.sleep, log=print, report=None):
         self.c, self.b, self.stop = settings(config), backend, stop
         self.clock, self.sleep, self.log = clock, sleep, log
         self.failures = 0
         self.completed = 0
         self.last_message = None
+        self.report = report
+
+    def publish(self, state, scene=None, reason=''):
+        if self.report:
+            paused = bool(reason) or (scene is not None and scene.page == 'unknown')
+            phase = '已暂停' if paused else PHASES.get(state, state)
+            if scene is not None and scene.page == 'ready' and state == 'playing':
+                phase = '倒计时连点'
+            self.report({'phase': phase, 'state': 'paused' if paused else 'running',
+                         'details': reason or ('界面错误，等待识别恢复' if paused else phase),
+                         'score': scene.score if scene else None,
+                         'completed': self.completed, 'failures': self.failures})
 
     def check(self):
         if self.stop.is_set():
-            raise Stopped('F8：已停止')
+            raise Stopped('已停止（停止按钮 / F8）')
 
     def wait(self, seconds):
         end = self.clock() + seconds
@@ -84,6 +97,7 @@ class Controller:
             self.wait(0.3)
 
     def initial(self):
+        self.publish('home')
         # Require several fresh observations of Figure 1 before any mouse action.
         for _ in range(self.c['confirm_frames']):
             self.check()
@@ -100,15 +114,24 @@ class Controller:
         while True:
             self.check()
             try:
+                paused_reason = ''
                 if self.clock() < next_observe:
                     if state == 'playing' and scene.page in ('ready', 'playing') and not score_frames:
                         self.action('hammer')
                     self.wait(self.c['click_interval'])
                     continue
                 scene = self.b.observe()
+                self.publish(state, scene)
                 next_observe = self.clock() + self.c['scan_interval']
                 for page in ('home', 'success', 'failure'):
                     page_frames[page] = page_frames.get(page, 0) + 1 if scene.page == page else 0
+                # Count the final claimed round before its zero-stamina stop.
+                if state == 'claiming' and page_frames['home'] >= self.c['confirm_frames']:
+                    self.completed += 1
+                    self.failures = 0
+                    self.message(f'领取完成，已完成 {self.completed} 轮，返回图一继续')
+                    state, since = 'home', self.clock()
+                    self.publish(state, scene)
                 city_visible = scene.page in ('home', 'success')
                 zero_city = zero_city + 1 if city_visible and scene.city == 0 else 0
                 zero_cost = zero_cost + 1 if scene.page == 'success' and scene.cost == 0 else 0
@@ -135,6 +158,7 @@ class Controller:
                         scrolls += 1
                     else:
                         self.message('界面错误：关卡栏未找到钢琴家；暂停操作，F8 停止')
+                        paused_reason = '关卡栏未找到钢琴家'
                 elif state == 'selected' and scene.page == 'home' and scene.selected:
                     self.action('start')
                     state, since = 'starting', self.clock()
@@ -151,6 +175,7 @@ class Controller:
                         self.action('hammer')
                 elif state in ('starting', 'retrying', 'playing', 'exiting') and page_frames['failure'] >= self.c['confirm_frames']:
                     self.failures += 1
+                    self.publish('retrying', scene)
                     self.message(f'图五：连续失败 {self.failures}/3')
                     if self.failures >= 3:
                         raise Stopped('连续三次挑战失败，已停止')
@@ -165,21 +190,20 @@ class Controller:
                     # A missing cost is not treated as zero. Wait for readable reward data.
                     if scene.cost is None:
                         self.message('图七：消耗数字未识别，等待；F8 停止')
+                        paused_reason = '领取消耗未识别，等待恢复'
                     else:
                         self.action('claim')
                         state, since = 'claiming', self.clock()
                         self.message(f'图七：消耗 {scene.cost}，已点击领取奖励')
-                elif state == 'claiming' and page_frames['home'] >= self.c['confirm_frames']:
-                    self.completed += 1
-                    self.failures = 0
-                    self.message(f'领取完成，已完成 {self.completed} 轮，返回图一继续')
-                    state, since = 'home', self.clock()
                 elif scene.page == 'unknown' or self.clock() - since > self.c['transition_timeout']:
                     self.message('界面错误或页面切换未完成：暂停操作，等待正确界面；F8 停止')
+                    paused_reason = '界面错误或页面切换未完成'
+                self.publish(state, scene, paused_reason)
             except Stopped:
                 raise
             except Exception as error:
                 self.message(f'运行错误，暂停本次操作并等待恢复：{error}；F8 停止')
+                self.publish(state, reason=str(error))
             self.wait(self.c['click_interval'] if state == 'playing' else self.c['scan_interval'])
 
 
@@ -230,10 +254,11 @@ class ScreenReader:
 
 
 class DesktopBackend:
-    def __init__(self, stop=None, title='', hwnd=None, prepare=True):
+    def __init__(self, stop=None, title='', hwnd=None, prepare=True, capture_shield=None):
         import pyautogui as pg
         self.pg = pg
         self.stop = stop
+        self.capture_shield = capture_shield
         pg.PAUSE = 0
         # F8 is the manual stop requested by the user; corners are not stop triggers.
         pg.FAILSAFE = False
@@ -252,7 +277,9 @@ class DesktopBackend:
     def frame(self):
         self.guard()
         area = self.window.area()
-        return self.reader.cv.cvtColor(self.reader.np.array(self.pg.screenshot(region=area.region())), self.reader.cv.COLOR_RGB2BGR)
+        capture = lambda: self.pg.screenshot(region=area.region())
+        image = self.capture_shield.capture(capture) if self.capture_shield else capture()
+        return self.reader.cv.cvtColor(self.reader.np.array(image), self.reader.cv.COLOR_RGB2BGR)
 
     def observe(self):
         return self.reader.inspect(self.frame())
