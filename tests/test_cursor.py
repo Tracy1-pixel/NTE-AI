@@ -1,6 +1,4 @@
 import unittest
-import threading
-from automation import Stopped
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -60,38 +58,6 @@ class CursorTests(unittest.TestCase):
             self.assertTrue(backend.find_cursor())
         with patch('nte_cursor.windows_cursor_bitmap', return_value=(arrow(), (10, 10))):
             self.assertFalse(backend.find_cursor())
-
-    def test_scroll_waits_for_two_stable_menu_frames(self):
-        backend = DesktopBackend.__new__(DesktopBackend)
-        calls = []
-        backend.stop = threading.Event()
-        backend.pg = SimpleNamespace(moveTo=lambda *args, **kwargs: calls.append('move'),
-                                     scroll=lambda ticks: calls.append(('scroll', ticks)))
-        backend.reader = SimpleNamespace(cv=cv2)
-        backend.point = lambda x, y: (x, y)
-        backend.guard = lambda: None
-        values = iter([10, 30, 50, 50, 50])
-        backend.frame = lambda: np.full((1439, 2559, 3), next(values), np.uint8)
-        backend.scroll_bottom()
-        self.assertEqual(calls[0], 'move')
-        self.assertEqual(calls[1:], [('scroll', -8)] * 4)
-
-    def test_stop_during_scrolling_prevents_further_wheel_events(self):
-        backend = DesktopBackend.__new__(DesktopBackend)
-        backend.stop = threading.Event()
-        calls = []
-        def scroll(ticks):
-            calls.append(ticks)
-            backend.stop.set()
-        backend.pg = SimpleNamespace(moveTo=lambda *args, **kwargs: None, scroll=scroll)
-        backend.reader = SimpleNamespace(cv=cv2)
-        backend.point = lambda x, y: (x, y)
-        backend.guard = lambda: None
-        backend.frame = lambda: np.zeros((1439, 2559, 3), np.uint8)
-        with self.assertRaisesRegex(Stopped, 'F8'):
-            backend.scroll_bottom()
-        self.assertEqual(calls, [-8])
-
 
 if __name__ == '__main__':
     unittest.main()

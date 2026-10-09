@@ -1,4 +1,4 @@
-param([string]$Version = "1.4.0")
+param([string]$Version = "1.5.0")
 $ErrorActionPreference = "Stop"
 Set-Location (Split-Path $PSScriptRoot -Parent)
 python -m PyInstaller --noconfirm --clean --windowed --onedir --name NTE-AI --add-data "assets;assets" --collect-all rapidocr_onnxruntime --collect-all onnxruntime --collect-all pyautogui --collect-all pynput app.py 2>&1 | Tee-Object -FilePath pyinstaller-build.log
@@ -35,4 +35,4 @@ if ($process.ExitCode -ne 0) {
     throw "Installed application smoke test failed"
 }
 $report = Get-Content installed-test.json -Raw | ConvertFrom-Json
-if ($report.status -ne "passed" -or $report.gui -ne "passed" -or $report.overlay -ne "passed" -or $report.stop_button -ne "passed" -or $report.cursor_capture -ne "passed") { throw "Installed GUI/OCR/cursor/overlay test failed" }
+if ($report.status -ne "passed" -or $report.gui -ne "passed" -or $report.overlay -ne "passed" -or $report.stop_button -ne "passed" -or $report.cursor_capture -ne "passed" -or $report.star_anchors -ne "passed") { throw "Installed GUI/OCR/anchor/cursor/overlay test failed" }

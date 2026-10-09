@@ -3,6 +3,7 @@ import unittest
 
 from automation import Stopped
 from nte_workflow import Controller, Scene, fraction, integer, settings
+from nte_stars import StarAnchor
 
 
 class Game:
@@ -14,6 +15,7 @@ class Game:
         self.actions = []
         self.hits = 0
         self.retry_delay = 0
+        self.level_visible = False
 
     def observe(self):
         if self.retry_delay:
@@ -44,18 +46,32 @@ class Game:
         elif name == 'claim':
             self.city = max(0, self.city - self.cost)
             self.scene = Scene('home', city=self.city)
+            self.level_visible = False
         elif name == 'retry':
             self.new_attempt()
             self.retry_delay = 4  # The failure panel stays visible during loading.
+        elif name == 'scroll_step':
+            self.level_visible = True
+            return True
 
     def select_level(self):
         self.actions.append('select_level')
+        if not self.level_visible:
+            return False
+        self.actions.append('click_level')
         self.scene.selected = True
         return True
 
     def find_cursor(self):
         self.actions.append('find_cursor')
         return True
+
+    def find_star_anchor(self):
+        self.actions.append('find_star_anchor')
+        return StarAnchor(150, 500, 150, 40)
+
+    def move_to_anchor(self, anchor):
+        self.actions.append('move_to_anchor')
 
 
 class WorkflowTests(unittest.TestCase):
@@ -104,7 +120,8 @@ class WorkflowTests(unittest.TestCase):
         with self.assertRaisesRegex(Stopped, '都市体力为 0'):
             controller.run()
         self.assertEqual(game.actions[:5], ['cursor_no', 'cursor_yes', 'cursor_no', 'cursor_yes', 'cursor_yes'])
-        self.assertEqual(game.actions[5:8], ['scroll_bottom', 'select_level', 'start'])
+        self.assertEqual(game.actions[5:12], ['find_star_anchor', 'move_to_anchor', 'select_level',
+                                            'scroll_step', 'select_level', 'click_level', 'start'])
 
     def test_home_select_ready_goal_claim_and_repeat_until_zero(self):
         game = Game()
@@ -112,8 +129,8 @@ class WorkflowTests(unittest.TestCase):
         with self.assertRaisesRegex(Stopped, '都市体力为 0'):
             controller.run()
         self.assertEqual(game.actions.count('claim'), 2)
-        self.assertEqual(game.actions.count('scroll_bottom'), 2)
-        self.assertEqual(game.actions.count('select_level'), 2)
+        self.assertEqual(game.actions.count('scroll_step'), 2)
+        self.assertEqual(game.actions.count('click_level'), 2)
         self.assertEqual(game.actions.count('start'), 2)
         self.assertEqual(game.actions.count('exit'), 2)
         self.assertNotIn('retry', game.actions)
@@ -190,7 +207,7 @@ class WorkflowTests(unittest.TestCase):
             controller.run()
         self.assertEqual(game.actions.count('retry'), 2)
         self.assertEqual(game.actions.count('start'), 1)
-        self.assertEqual(game.actions.count('scroll_bottom'), 1)
+        self.assertEqual(game.actions.count('scroll_step'), 1)
         self.assertNotIn('claim', game.actions)
 
     def test_successful_claim_resets_failure_streak(self):
@@ -243,6 +260,45 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(integer('48'), 48)
         self.assertEqual(integer('0'), 0)
         self.assertIsNone(integer('领取48'))
+
+    def test_missing_triplet_waits_without_moving_or_scrolling(self):
+        class NoAnchor(Game):
+            def find_star_anchor(self):
+                self.actions.append('find_star_anchor')
+                return None
+        game = NoAnchor()
+        controller, _ = self.make(game)
+        reports = []
+        controller.report = reports.append
+        with self.assertRaisesRegex(Stopped, 'F8'):
+            controller.run()
+        self.assertEqual(set(game.actions), {'find_cursor', 'find_star_anchor'})
+        self.assertTrue(any(row['phase'] == '识别三星锚点' and row['state'] == 'paused' for row in reports))
+
+    def test_visible_target_is_clicked_without_unnecessary_scrolling(self):
+        game = Game(city=48)
+        game.level_visible = True
+        controller, _ = self.make(game)
+        with self.assertRaisesRegex(Stopped, '都市体力为 0'):
+            controller.run()
+        self.assertNotIn('scroll_step', game.actions)
+        self.assertEqual(game.actions.count('click_level'), 1)
+        self.assertLess(game.actions.index('move_to_anchor'), game.actions.index('click_level'))
+
+    def test_unreadable_target_at_bottom_pauses_wheel_but_keeps_ocr(self):
+        class BottomWithoutTarget(Game):
+            def action(self, name):
+                if name == 'scroll_step':
+                    self.actions.append(name)
+                    return False
+                return super().action(name)
+        game = BottomWithoutTarget()
+        controller, _ = self.make(game)
+        with self.assertRaisesRegex(Stopped, 'F8'):
+            controller.run()
+        self.assertEqual(game.actions.count('scroll_step'), 1)
+        self.assertGreater(game.actions.count('select_level'), 1)
+        self.assertNotIn('start', game.actions)
 
 
 if __name__ == '__main__':

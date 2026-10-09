@@ -5,6 +5,7 @@ import math
 import re
 import sys
 import time
+import unicodedata
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -18,7 +19,7 @@ ASSETS = Path(getattr(sys, '_MEIPASS', Path(__file__).resolve().parent)) / 'asse
 
 def settings(saved=None):
     c = {'click_interval': 0.08, 'scan_interval': 0.25, 'confirm_frames': 3,
-         'transition_timeout': 30.0, 'workflow_version': 4, 'window_title': ''}
+         'transition_timeout': 30.0, 'workflow_version': 5, 'window_title': ''}
     for key in c:
         if key != 'workflow_version' and key in (saved or {}):
             c[key] = saved[key]
@@ -68,8 +69,8 @@ class Controller:
         if self.report:
             paused = bool(reason) or (scene is not None and scene.page == 'unknown')
             phase = '已暂停' if paused else PHASES.get(state, state)
-            if state == 'cursor' and scene is not None and scene.page == 'home':
-                phase = PHASES['cursor']
+            if state in ('cursor', 'anchor') and scene is not None and scene.page == 'home':
+                phase = PHASES[state]
             if scene is not None and scene.page == 'ready' and state == 'playing':
                 phase = '倒计时连点'
             self.report({'phase': phase, 'state': 'paused' if paused else 'running',
@@ -94,9 +95,10 @@ class Controller:
 
     def action(self, name):
         self.check()
-        self.b.action(name)
+        result = self.b.action(name)
         if name != 'hammer':
             self.wait(0.3)
+        return result
 
     def initial(self):
         self.publish('home')
@@ -111,7 +113,7 @@ class Controller:
         self.initial()
         state, since = 'home', self.clock()
         page_frames, zero_city, zero_cost, score_frames = {}, 0, 0, 0
-        scrolls, cursor_frames = 0, 0
+        at_bottom, cursor_frames = False, 0
         next_observe, scene = 0, None
         while True:
             self.check()
@@ -156,24 +158,32 @@ class Controller:
                 elif state == 'cursor' and scene.page == 'home':
                     cursor_frames = cursor_frames + 1 if self.b.find_cursor() else 0
                     if cursor_frames >= self.c['confirm_frames']:
-                        scrolls = 0
-                        self.publish('scrolling', scene)
-                        self.message('已识别游戏光标，移动到左侧关卡栏并向下滚动到底')
-                        self.action('scroll_bottom')
-                        state, since = 'select', self.clock()
-                        self.message('已识别游戏光标并滚动到底，OCR 寻找 3-10 钢！琴！家！')
+                        state, since = 'anchor', self.clock()
+                        self.message('已识别游戏光标，寻找左侧连续三颗星的整体锚点')
                     else:
                         paused_reason = '等待确认游戏光标，请将鼠标置于游戏内容区'
                         self.message(paused_reason + '；停止按钮 / F8 可停止')
+                elif state == 'anchor' and scene.page == 'home':
+                    anchor = self.b.find_star_anchor()
+                    if anchor is None:
+                        paused_reason = '左侧未识别到连续三颗星的完整锚点，等待恢复'
+                        self.message(paused_reason + '；停止按钮 / F8 可停止')
+                    else:
+                        self.check()
+                        self.b.move_to_anchor(anchor)
+                        at_bottom = False
+                        state, since = 'select', self.clock()
+                        self.message('光标已移到三星整体锚点，逐批滚动并 OCR 寻找 3-10')
                 elif state == 'select' and scene.page == 'home':
                     if self.b.select_level():
                         state, since = 'selected', self.clock()
-                    elif scrolls < 20:
-                        self.action('scroll_bottom')
-                        scrolls += 1
+                        self.message('OCR 已识别并点击 3-10，停止滚动，等待确认选中')
+                    elif not at_bottom:
+                        self.publish('scrolling', scene)
+                        at_bottom = self.action('scroll_step') is False
                     else:
-                        self.message('界面错误：关卡栏未找到钢琴家；暂停操作，F8 停止')
-                        paused_reason = '关卡栏未找到钢琴家'
+                        paused_reason = '关卡栏已到底，尚未 OCR 识别到 3-10；暂停滚动，继续识别'
+                        self.message(paused_reason + '；停止按钮 / F8 可停止')
                 elif state == 'selected' and scene.page == 'home' and scene.selected:
                     self.action('start')
                     state, since = 'starting', self.clock()
@@ -265,8 +275,9 @@ class ScreenReader:
 
     @staticmethod
     def is_level(text):
-        normalized = re.sub(r'\s', '', text).replace('—', '-').replace('一', '-')
-        return bool(re.search(r'3[-–]?10', normalized) and any(c in text for c in '钢琴家'))
+        normalized = unicodedata.normalize('NFKC', text)
+        normalized = re.sub(r'\s', '', normalized).replace('—', '-').replace('一', '-')
+        return bool(re.search(r'(?<!\d)3[-–]?10(?!\d)', normalized))
 
 
 class DesktopBackend:
@@ -290,7 +301,10 @@ class DesktopBackend:
         self.window.area()
         self.reader = ScreenReader()
         from nte_cursor import CursorDetector
+        from nte_stars import StarAnchorDetector
         self.cursor_detector = CursorDetector()
+        self.star_detector = StarAnchorDetector()
+        self.scroll_stable = 0
 
     def frame(self):
         self.guard()
@@ -319,34 +333,50 @@ class DesktopBackend:
                 return self.cursor_detector.matches(bitmap)
         return False
 
-    def scroll_bottom(self):
-        self.pg.moveTo(*self.point(230, 1060), duration=0.2)
+    def find_star_anchor(self):
+        frame = self.reader.cv.resize(self.frame(), REFERENCE)
+        self.scroll_stable = 0
+        return self.star_detector.find(frame)
+
+    def move_to_anchor(self, anchor):
+        self.guard()
+        self.pg.moveTo(*self.point(*anchor.center), duration=0.2)
+        self.guard()
+
+    def scroll_step(self):
         cv = self.reader.cv
-        def menu():
-            frame = cv.resize(self.frame(), REFERENCE)
-            return cv.cvtColor(frame[140:1390, :455], cv.COLOR_BGR2GRAY)
-        previous, stable = menu(), 0
-        for _ in range(30):
-            self.guard()
-            self.pg.scroll(-8)
-            if self.stop is not None:
-                if self.stop.wait(0.2):
-                    raise Stopped('已停止（停止按钮 / F8）')
-            else:
-                time.sleep(0.2)
-            current = menu()
-            stable = stable + 1 if float(cv.absdiff(previous, current).mean()) < 1.0 else 0
-            previous = current
-            if stable >= 2:
-                return
-        raise ValueError('关卡栏仍在滚动，尚未确认到底；等待后重试')
+        frame = cv.resize(self.frame(), REFERENCE)
+        anchor = self.star_detector.find(frame)
+        if anchor is None:
+            raise ValueError('左侧未识别到连续三颗星的完整锚点，暂停滚动')
+        self.move_to_anchor(anchor)
+        if self.stop is not None:
+            if self.stop.wait(0.1):
+                raise Stopped('已停止（停止按钮 / F8）')
+        else:
+            time.sleep(0.1)
+        # Compare after repositioning the cursor; its movement/hover must not
+        # be mistaken for the level list continuing to scroll at the bottom.
+        before = cv.resize(self.frame(), REFERENCE)
+        self.guard()
+        self.pg.scroll(-3)
+        if self.stop is not None:
+            if self.stop.wait(0.25):
+                raise Stopped('已停止（停止按钮 / F8）')
+        else:
+            time.sleep(0.25)
+        after = cv.resize(self.frame(), REFERENCE)
+        before = cv.cvtColor(before[140:1390, :455], cv.COLOR_BGR2GRAY)
+        after = cv.cvtColor(after[140:1390, :455], cv.COLOR_BGR2GRAY)
+        self.scroll_stable = self.scroll_stable + 1 if float(cv.absdiff(before, after).mean()) < 1.0 else 0
+        return self.scroll_stable < 2
 
     def action(self, name):
         self.guard()
         points = {'start': (2290, 1340), 'hammer': (125, 610), 'exit': (65, 64),
                   'claim': (1545, 1115), 'retry': (1545, 1115)}
-        if name == 'scroll_bottom':
-            self.scroll_bottom()
+        if name == 'scroll_step':
+            return self.scroll_step()
         else:
             if name != 'hammer':
                 self.pg.moveTo(*self.point(*points[name]), duration=0.15)

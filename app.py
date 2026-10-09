@@ -51,6 +51,13 @@ def self_test(report):
         if engine.parse_score(text) != 1900:
             raise RuntimeError(f'OCR 自检失败：{text}')
         reader = workflow.ScreenReader()
+        from nte_stars import StarAnchorDetector
+        stars = cv2.imread(str(workflow.ASSETS / 'star_triplet.png'))
+        if len(StarAnchorDetector().groups(stars)) != 1:
+            raise RuntimeError('真实三星整体锚点自检失败')
+        level = cv2.imread(str(workflow.ASSETS / 'level_sample.png'))
+        if not reader.is_level(reader.text(level)):
+            raise RuntimeError('真实截图 3-10 OCR 自检失败')
         for name, expected, parser in (('score_zero', 0, engine.parse_score), ('score_goal', 1927, engine.parse_score), ('city_sample', 652, workflow.fraction), ('cost_sample', 48, workflow.integer)):
             image = cv2.imread(str(workflow.ASSETS / (name + '.png')))
             actual = parser(reader.text(image))
@@ -113,7 +120,7 @@ def self_test(report):
             area = api.geometry(int(api.u.GetAncestor(root.winfo_id(), 2)))
             pyautogui.screenshot(region=area.region()).save(str(Path(report).with_suffix('.png')))
         app.close()
-        data = {'status': 'passed', 'score': 1900, 'gui': 'passed', 'cursor_capture': 'passed', 'stop_button': 'passed', 'overlay': 'passed', 'window_geometry': 'passed', 'frozen': bool(getattr(sys, 'frozen', False))}
+        data = {'status': 'passed', 'score': 1900, 'gui': 'passed', 'star_anchors': 'passed', 'cursor_capture': 'passed', 'stop_button': 'passed', 'overlay': 'passed', 'window_geometry': 'passed', 'frozen': bool(getattr(sys, 'frozen', False))}
         code = 0
     except Exception as error:
         data, code = {'status': 'failed', 'error': str(error)}, 1
@@ -131,7 +138,7 @@ class App:
         self.busy = False
         self.runtime = RuntimeStatus()
         self.overlay = None
-        root.title('异环助手 · 店长特供 1.4')
+        root.title('异环助手 · 店长特供 1.5')
         root.geometry('980x820')
         root.minsize(920, 760)
         root.configure(bg='#0b1220')
@@ -168,8 +175,8 @@ class App:
         ttk.Button(sidebar, text='控制台', style='Accent.TButton', command=lambda: root.deiconify()).pack(fill='x', pady=5)
         self.config_button = ttk.Button(sidebar, text='七图流程说明', command=self.configure)
         self.config_button.pack(fill='x', pady=5)
-        tk.Label(sidebar, text='01  识别初始界面\n\n02  光标识别 / 选关\n\n03  锤子连点\n\n04  结算 / 重试', bg='#101b31', fg='#8fa1bc', justify='left', font=('Microsoft YaHei UI', 10), anchor='nw').pack(fill='x', pady=30)
-        tk.Label(sidebar, text='窗口模式\n1920 × 1080\n\nv1.4.0', bg='#101b31', fg='#61738d', justify='left', font=('Segoe UI', 10), anchor='sw').pack(side='bottom', fill='x')
+        tk.Label(sidebar, text='01  识别初始界面\n\n02  三星锚点 / 选关\n\n03  锤子连点\n\n04  结算 / 重试', bg='#101b31', fg='#8fa1bc', justify='left', font=('Microsoft YaHei UI', 10), anchor='nw').pack(fill='x', pady=30)
+        tk.Label(sidebar, text='窗口模式\n1920 × 1080\n\nv1.5.0', bg='#101b31', fg='#61738d', justify='left', font=('Segoe UI', 10), anchor='sw').pack(side='bottom', fill='x')
 
         outer = ttk.Frame(root, padding=(24, 22))
         outer.pack(fill='both', expand=True)
@@ -291,7 +298,7 @@ class App:
                 child.destroy()
             self.preview_images.clear()
             from PIL import Image, ImageTk
-            for name, label in (('home_start', '开始营业'), ('score_goal', '营业额'), ('cost_sample', '领取消耗')):
+            for name, label in (('star_triplet', '三星滚动锚点'), ('score_goal', '营业额'), ('cost_sample', '领取消耗')):
                 path = workflow.ASSETS / f'{name}.png'
                 if path.exists():
                     with Image.open(path) as source:
@@ -317,7 +324,7 @@ class App:
         window.title('七图流程预设')
         window.geometry('640x480')
         text = ('① 图一：必须是店长特供关卡选择页面。\n'
-                '② 先识别游戏光标，移动到左侧滚动到底，OCR 找到并点击 3-10；确认选中后移动到右下角点击开始营业。\n'
+                '② 识别光标和左侧连续三星整体锚点，光标移到锚点上逐批滚动；每批 OCR 查找 3-10，找到即点击，再点开始营业。\n'
                 '③ 图三倒计时与图四营业阶段：连续点击左侧锤子。\n'
                 '④ 营业额达到 1900：点击左上退出图标，等待图七。\n'
                 '⑤ 图七：读取领取下方消耗，非零时领取，返回图一。\n'
