@@ -50,7 +50,7 @@ class WindowTests(unittest.TestCase):
         for prepare in (True, False):
             with self.subTest(prepare=prepare), patch.dict(sys.modules, {'pyautogui': pg}), \
                     patch.object(workflow, 'Win32', return_value=api), \
-                    patch.object(workflow, 'ScreenReader'), \
+                    patch.object(workflow, 'ScreenReader'), patch('nte_input.WindowsMouse'), \
                     patch('nte_cursor.CursorDetector'), patch('nte_stars.StarAnchorDetector'), \
                     patch.object(workflow.time, 'sleep'):
                 api.calls.clear()

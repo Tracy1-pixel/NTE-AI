@@ -101,7 +101,24 @@ def self_test(report):
             from nte_status import overlay_position
             app.overlay.attach(hwnd)
             api.activate(hwnd)
+            probe.lift()
+            probe.focus_force()
             root.update()
+            from nte_input import WindowsMouse
+            received = []
+            probe.bind('<Button-1>', lambda event: received.append('click'))
+            probe.bind('<MouseWheel>', lambda event: received.append(('wheel', event.delta)))
+            def input_guard():
+                root.update()
+                window.area()
+            mouse = WindowsMouse(input_guard)
+            # Real input goes only to this test-owned window, never to a game.
+            mouse.move(*area.point(1279.5, 719.5, workflow.REFERENCE))
+            mouse.click()
+            mouse.scroll(-3)
+            root.update()
+            if 'click' not in received or not any(isinstance(event, tuple) and event[0] == 'wheel' and event[1] < 0 for event in received):
+                raise RuntimeError(f'Windows 实际鼠标移动 / 点击 / 滚轮事件未确认：{received}')
             foreground = api.u.GetForegroundWindow()
             area = api.geometry(hwnd)
             app.overlay.refresh(RuntimeStatus(phase='连点锤子', state='running', score=1927))
@@ -122,7 +139,7 @@ def self_test(report):
             area = api.geometry(int(api.u.GetAncestor(root.winfo_id(), 2)))
             pyautogui.screenshot(region=area.region()).save(str(Path(report).with_suffix('.png')))
         app.close()
-        data = {'status': 'passed', 'score': 1900, 'gui': 'passed', 'star_anchors': 'passed', 'cursor_capture': 'passed', 'stop_button': 'passed', 'overlay': 'passed', 'window_geometry': 'passed', 'frozen': bool(getattr(sys, 'frozen', False))}
+        data = {'status': 'passed', 'score': 1900, 'gui': 'passed', 'star_anchors': 'passed', 'cursor_capture': 'passed', 'mouse_input': 'passed', 'stop_button': 'passed', 'overlay': 'passed', 'window_geometry': 'passed', 'frozen': bool(getattr(sys, 'frozen', False))}
         code = 0
     except Exception as error:
         data, code = {'status': 'failed', 'error': str(error)}, 1
@@ -140,7 +157,7 @@ class App:
         self.busy = False
         self.runtime = RuntimeStatus()
         self.overlay = None
-        root.title('异环助手 · 店长特供 1.6')
+        root.title('异环助手 · 店长特供 1.7')
         root.geometry('980x820')
         root.minsize(920, 760)
         root.configure(bg='#0b1220')
@@ -178,7 +195,7 @@ class App:
         self.config_button = ttk.Button(sidebar, text='七图流程说明', command=self.configure)
         self.config_button.pack(fill='x', pady=5)
         tk.Label(sidebar, text='01  识别初始界面\n\n02  三星锚点 / 选关\n\n03  锤子连点\n\n04  结算 / 重试', bg='#101b31', fg='#8fa1bc', justify='left', font=('Microsoft YaHei UI', 10), anchor='nw').pack(fill='x', pady=30)
-        tk.Label(sidebar, text='当前游戏窗口\n自动读取尺寸\n\nv1.6.0', bg='#101b31', fg='#61738d', justify='left', font=('Segoe UI', 10), anchor='sw').pack(side='bottom', fill='x')
+        tk.Label(sidebar, text='当前游戏窗口\n自动读取尺寸\n\nv1.7.0', bg='#101b31', fg='#61738d', justify='left', font=('Segoe UI', 10), anchor='sw').pack(side='bottom', fill='x')
 
         outer = ttk.Frame(root, padding=(24, 22))
         outer.pack(fill='both', expand=True)
@@ -388,7 +405,7 @@ class App:
             listener.start()
             if self.stop.wait(5):
                 raise engine.Stopped('已取消')
-            desktop = workflow.DesktopBackend(self.stop, config['window_title'], handle, prepare=(mode == 'run'), capture_shield=self.overlay.shield if self.overlay else None)
+            desktop = workflow.DesktopBackend(self.stop, config['window_title'], handle, prepare=(mode == 'run'), capture_shield=self.overlay.shield if self.overlay else None, log=emit)
             if self.stop.is_set():
                 raise engine.Stopped('已停止')
             if mode == 'check':

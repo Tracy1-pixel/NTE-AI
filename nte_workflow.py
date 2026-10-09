@@ -173,29 +173,32 @@ class Controller:
                         self.b.move_to_anchor(anchor)
                         at_bottom = False
                         state, since = 'select', self.clock()
-                        self.message('光标已移到三星整体锚点，逐批滚动并 OCR 寻找 3-10')
+                        self.message('光标移动已核验，逐批滚动并 OCR 寻找 3-10')
                 elif state == 'select' and scene.page == 'home':
                     if self.b.select_level():
                         state, since = 'selected', self.clock()
-                        self.message('OCR 已识别并点击 3-10，停止滚动，等待确认选中')
+                        self.message('OCR 识别到 3-10，已发送点击输入；等待右侧标题确认选中')
                     elif not at_bottom:
                         self.publish('scrolling', scene)
                         at_bottom = self.action('scroll_step') is False
                     else:
-                        paused_reason = '关卡栏已到底，尚未 OCR 识别到 3-10；暂停滚动，继续识别'
+                        paused_reason = '两批滚动后列表未变化，无法确认是否到底或游戏未接收输入；暂停滚动，继续 OCR 等待 3-10'
                         self.message(paused_reason + '；停止按钮 / F8 可停止')
                 elif state == 'selected' and scene.page == 'home' and scene.selected:
+                    self.message('右侧标题已确认选中 3-10')
                     self.action('start')
                     state, since = 'starting', self.clock()
                     score_frames = 0
-                    self.message('已点击开始营业，等待图三；倒计时出现后即开始点击锤子')
+                    self.message('已发送开始营业点击输入，等待图三确认；倒计时出现后才开始锤子连点')
                 elif state in ('starting', 'retrying', 'playing') and scene.page in ('ready', 'playing'):
+                    if state != 'playing':
+                        self.message('已识别倒计时 / 营业画面，确认开始营业成功')
                     state, since = 'playing', self.clock()
                     score_frames = score_frames + 1 if scene.score is not None and scene.score >= 1900 else 0
                     if score_frames >= self.c['confirm_frames']:
                         self.action('exit')
                         state, since = 'exiting', self.clock()
-                        self.message(f'图六：营业额 {scene.score} 达标，已点击左上退出图标')
+                        self.message(f'图六：营业额 {scene.score} 达标，已发送左上退出点击输入，等待结算画面')
                     elif not score_frames:
                         self.action('hammer')
                 elif state in ('starting', 'retrying', 'playing', 'exiting') and page_frames['failure'] >= self.c['confirm_frames']:
@@ -219,7 +222,7 @@ class Controller:
                     else:
                         self.action('claim')
                         state, since = 'claiming', self.clock()
-                        self.message(f'图七：消耗 {scene.cost}，已点击领取奖励')
+                        self.message(f'图七：消耗 {scene.cost}，已发送领取点击输入，等待返回图一确认')
                 elif scene.page == 'unknown' or self.clock() - since > self.c['transition_timeout']:
                     cursor_frames = 0
                     self.message('界面错误或页面切换未完成：暂停操作，等待正确界面；F8 停止')
@@ -281,11 +284,12 @@ class ScreenReader:
 
 
 class DesktopBackend:
-    def __init__(self, stop=None, title='', hwnd=None, prepare=True, capture_shield=None):
+    def __init__(self, stop=None, title='', hwnd=None, prepare=True, capture_shield=None, log=print):
         import pyautogui as pg
         self.pg = pg
         self.stop = stop
         self.capture_shield = capture_shield
+        self.log = log
         pg.PAUSE = 0
         # F8 is the manual stop requested by the user; corners are not stop triggers.
         pg.FAILSAFE = False
@@ -297,6 +301,8 @@ class DesktopBackend:
             api.activate(handle)
             time.sleep(0.3)
         self.window.area()
+        from nte_input import WindowsMouse
+        self.mouse = WindowsMouse(self.guard, self.stop)
         self.reader = ScreenReader()
         from nte_cursor import CursorDetector
         from nte_stars import StarAnchorDetector
@@ -336,10 +342,21 @@ class DesktopBackend:
         self.scroll_stable = 0
         return self.star_detector.find(frame)
 
+    def move_verified(self, x, y, label):
+        result = self.mouse.move(*self.point(x, y))
+        self.guard()
+        # OS coordinates alone do not prove that a software-rendered game
+        # cursor followed the event. Require the photographed arrow near target.
+        for _ in range(3):
+            if self.find_cursor():
+                self.log(f'{label}：系统光标 {result.before} → {result.after}，目标 {result.target}；目标附近游戏光标已确认')
+                return result
+            self.mouse.wait(0.1)
+            self.guard()
+        raise ValueError(f'{label}：系统光标 {result.before} → {result.after}，但目标附近未确认游戏光标；暂停点击，请检查游戏是否接收输入')
+
     def move_to_anchor(self, anchor):
-        self.guard()
-        self.pg.moveTo(*self.point(*anchor.center), duration=0.2)
-        self.guard()
+        return self.move_verified(*anchor.center, '移动到三星锚点')
 
     def scroll_step(self):
         cv = self.reader.cv
@@ -357,7 +374,7 @@ class DesktopBackend:
         # be mistaken for the level list continuing to scroll at the bottom.
         before = cv.resize(self.frame(), REFERENCE)
         self.guard()
-        self.pg.scroll(-3)
+        self.mouse.scroll(-3)
         if self.stop is not None:
             if self.stop.wait(0.25):
                 raise Stopped('已停止（停止按钮 / F8）')
@@ -377,9 +394,12 @@ class DesktopBackend:
             return self.scroll_step()
         else:
             if name != 'hammer':
-                self.pg.moveTo(*self.point(*points[name]), duration=0.15)
-                self.guard()
-            self.pg.click(*self.point(*points[name]))
+                labels = {'start': '开始营业', 'exit': '退出', 'claim': '领取奖励', 'retry': '重新挑战'}
+                self.move_verified(*points[name], f'移动到{labels[name]}按钮')
+            else:
+                self.mouse.move(*self.point(*points[name]))
+            self.guard()
+            self.mouse.click()
 
     def select_level(self):
         frame = self.reader.cv.resize(self.frame(), REFERENCE)
@@ -388,10 +408,9 @@ class DesktopBackend:
             if confidence >= 0.65 and self.reader.is_level(text):
                 x = sum(p[0] for p in box) / 4
                 y = sum(p[1] for p in box) / 4 + 140
+                self.move_verified(x, y, '移动到 OCR 3-10 关卡')
                 self.guard()
-                self.pg.moveTo(*self.point(x, y), duration=0.15)
-                self.guard()
-                self.pg.click(*self.point(x, y))
+                self.mouse.click()
                 return True
         return False
 

@@ -123,6 +123,22 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(game.actions[5:12], ['find_star_anchor', 'move_to_anchor', 'select_level',
                                             'scroll_step', 'select_level', 'click_level', 'start'])
 
+    def test_failed_mouse_verification_never_reports_movement_or_click_success(self):
+        class StalledMouse(Game):
+            def move_to_anchor(self, anchor):
+                self.actions.append('move_failed')
+                raise ValueError('鼠标移动未确认：实际坐标未改变')
+        game = StalledMouse()
+        controller, _ = self.make(game)
+        with self.assertRaisesRegex(Stopped, 'F8'):
+            controller.run()
+        self.assertIn('move_failed', game.actions)
+        self.assertNotIn('click_level', game.actions)
+        self.assertNotIn('scroll_step', game.actions)
+        self.assertNotIn('start', game.actions)
+        self.assertTrue(any('鼠标移动未确认' in line for line in self.logs))
+        self.assertFalse(any('光标移动已核验' in line for line in self.logs))
+
     def test_home_select_ready_goal_claim_and_repeat_until_zero(self):
         game = Game()
         controller, _ = self.make(game)

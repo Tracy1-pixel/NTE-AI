@@ -8,6 +8,7 @@ import numpy as np
 
 from automation import Stopped
 from nte_stars import StarAnchorDetector
+from nte_input import MoveResult
 from nte_window import ClientArea
 from nte_workflow import DesktopBackend, REFERENCE, ScreenReader
 
@@ -34,10 +35,15 @@ class StarTests(unittest.TestCase):
         frames = iter(frames)
         backend.frame = lambda: next(frames)
         backend.calls = []
-        backend.pg = SimpleNamespace(
-            moveTo=lambda *point, **kwargs: backend.calls.append(('move', point)),
+        def move(*point):
+            backend.calls.append(('move', point))
+            return MoveResult((0, 0), point, point)
+        backend.mouse = SimpleNamespace(
+            move=move, wait=lambda seconds: None,
             scroll=lambda ticks: backend.calls.append(('wheel', ticks)),
-            click=lambda *point: backend.calls.append(('click', point)))
+            click=lambda: backend.calls.append(('click', backend.calls[-1][1])))
+        backend.find_cursor = lambda: True
+        backend.log = lambda text: None
         return backend
 
     def test_real_sample_is_one_anchor_covering_all_three_stars(self):
@@ -106,7 +112,7 @@ class StarTests(unittest.TestCase):
         def wheel(ticks):
             backend.calls.append(('wheel', ticks))
             backend.stop.set()
-        backend.pg.scroll = wheel
+        backend.mouse.scroll = wheel
         with self.assertRaisesRegex(Stopped, 'F8'):
             backend.scroll_step()
         self.assertEqual(len(backend.calls), 2)
