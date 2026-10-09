@@ -10,7 +10,7 @@ import time
 from pathlib import Path
 
 import automation as engine
-import workflow
+import nte_workflow as workflow
 
 
 def enable_dpi_awareness():

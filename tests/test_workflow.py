@@ -2,7 +2,7 @@ import threading
 import unittest
 
 from automation import Stopped
-from workflow import Controller, Scene, fraction, integer, settings
+from nte_workflow import Controller, Scene, fraction, integer, settings
 
 
 class Game:

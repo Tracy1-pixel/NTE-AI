@@ -401,7 +401,7 @@ def main():
         App(root)
         root.mainloop()
         return
-    import workflow
+    import nte_workflow as workflow
     if args.command == 'check':
         print(workflow.DesktopBackend().observe())
         return
