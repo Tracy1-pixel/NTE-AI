@@ -92,6 +92,30 @@ class WorkflowTests(unittest.TestCase):
             controller.run()
         self.assertNotIn('claim', game.actions)
 
+    def test_each_reward_reads_changed_cost_until_zero(self):
+        class VariableCostGame(Game):
+            def __init__(self):
+                super().__init__(city=500)
+                self.costs = iter([48, 24, 7, 0])
+                self.claimed_costs = []
+
+            def action(self, name):
+                if name == 'exit':
+                    self.cost = next(self.costs)
+                elif name == 'claim':
+                    self.claimed_costs.append(self.scene.cost)
+                super().action(name)
+
+        game = VariableCostGame()
+        controller, _ = self.make(game)
+        with self.assertRaisesRegex(Stopped, '领取按钮下方消耗为 0'):
+            controller.run()
+        self.assertEqual(game.claimed_costs, [48, 24, 7])
+        self.assertEqual(game.city, 421)
+        self.assertEqual(game.actions.count('start'), 4)
+        self.assertEqual(game.actions.count('claim'), 3)
+        self.assertEqual(controller.completed, 3)
+
     def test_live_status_counts_final_round_before_zero_stamina_stop(self):
         controller, _ = self.make(Game())
         reports = []
