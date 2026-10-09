@@ -90,3 +90,4 @@ jobs:
               --title "异环助手 $version" \
               --notes-file packaging/release-notes.md \
               --latest
+          fi
