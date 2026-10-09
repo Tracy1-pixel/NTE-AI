@@ -1,7 +1,7 @@
-param([string]$Version = "1.0.0")
+param([string]$Version = "1.1.0")
 $ErrorActionPreference = "Stop"
 Set-Location (Split-Path $PSScriptRoot -Parent)
-python -m PyInstaller --noconfirm --clean --windowed --onedir --name NTE-AI --collect-all rapidocr_onnxruntime --collect-all onnxruntime --collect-all pyautogui --collect-all pynput app.py 2>&1 | Tee-Object -FilePath pyinstaller-build.log
+python -m PyInstaller --noconfirm --clean --windowed --onedir --name NTE-AI --add-data "assets;assets" --collect-all rapidocr_onnxruntime --collect-all onnxruntime --collect-all pyautogui --collect-all pynput app.py 2>&1 | Tee-Object -FilePath pyinstaller-build.log
 if ($LASTEXITCODE -ne 0) {
     $detail = (Get-Content pyinstaller-build.log -Tail 12) -join " | "
     Write-Output "::error::PyInstaller failed: $detail"

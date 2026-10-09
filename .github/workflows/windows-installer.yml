@@ -2,7 +2,7 @@ name: Windows installer
 on:
   push:
     branches: [main]
-    paths: ['**.py', 'requirements.txt', 'requirements-build.txt', 'packaging/**', '.github/workflows/windows-installer.yml']
+    paths: ['**.py', 'assets/**', 'requirements.txt', 'requirements-build.txt', 'packaging/**', '.github/workflows/windows-installer.yml']
   workflow_dispatch:
 jobs:
   build:

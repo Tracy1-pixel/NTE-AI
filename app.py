@@ -10,6 +10,7 @@ import time
 from pathlib import Path
 
 import automation as engine
+import workflow
 
 
 def enable_dpi_awareness():
@@ -37,6 +38,12 @@ def self_test(report):
         text = ''.join(item[1] for item in sorted(result or [], key=lambda row: min(p[0] for p in row[0])))
         if engine.parse_score(text) != 1900:
             raise RuntimeError(f'OCR 自检失败：{text}')
+        reader = workflow.ScreenReader()
+        for name, expected, parser in (('score_zero', 0, engine.parse_score), ('score_goal', 1927, engine.parse_score), ('city_sample', 652, workflow.fraction), ('cost_sample', 48, workflow.integer)):
+            image = cv2.imread(str(workflow.ASSETS / (name + '.png')))
+            actual = parser(reader.text(image))
+            if actual != expected:
+                raise RuntimeError(f'真实截图 OCR 自检失败：{name}={actual}')
         import tkinter as tk
         root = tk.Tk()
         app = App(root)
@@ -68,16 +75,16 @@ class App:
         outer = ttk.Frame(root, padding=20)
         outer.pack(fill='both', expand=True)
         ttk.Label(outer, text='店长特供 · 都市体力助手', font=('Microsoft YaHei UI', 20, 'bold')).pack(anchor='w')
-        ttk.Label(outer, text='连点锤子 → 分数达到 1900 → Esc / 退出 / 领取 → 再开始').pack(anchor='w', pady=8)
+        ttk.Label(outer, text='初始界面 → 钢琴家 → 锤子连点 → 点击退出图标 / 领取 → 循环').pack(anchor='w', pady=8)
         self.summary = tk.StringVar()
         ttk.Label(outer, textvariable=self.summary, wraplength=700).pack(anchor='w', pady=8)
-        self.config_button = ttk.Button(outer, text='① 配置截图区域与操作步骤', command=self.configure)
+        self.config_button = ttk.Button(outer, text='① 查看七图预设 / 使用预设', command=self.configure)
         self.config_button.pack(fill='x', pady=5)
 
         options = ttk.LabelFrame(outer, text='运行设置', padding=12)
         options.pack(fill='x', pady=10)
         self.fields = {}
-        for i, (name, label) in enumerate((('click_interval', '点击间隔（秒）'), ('max_rounds', '最多轮数'), ('max_minutes', '最多运行（分钟）'), ('round_timeout', '单轮超时（秒）'))):
+        for i, (name, label) in enumerate((('click_interval', '点击间隔（秒）'), ('scan_interval', '识别间隔（秒）'))):
             ttk.Label(options, text=label).grid(row=i // 2, column=(i % 2) * 2, padx=8, pady=6, sticky='w')
             variable = tk.StringVar()
             self.fields[name] = variable
@@ -88,11 +95,10 @@ class App:
         self.check_button.pack(side='left', padx=4)
         self.start_button = ttk.Button(actions, text='③ 保存设置并开始', command=lambda: self.launch('run'))
         self.start_button.pack(side='left', padx=4)
-        self.stop_button = ttk.Button(actions, text='停止（F8）', command=self.stop.set, state='disabled')
-        self.stop_button.pack(side='right', padx=4)
-        self.status = tk.StringVar(value='就绪：首次使用请先配置，建议先试运行 2 轮。')
+        ttk.Label(actions, text='运行中按 F8 停止').pack(side='right', padx=4)
+        self.status = tk.StringVar(value='就绪：请打开图一的店长特供关卡选择页面。')
         ttk.Label(outer, textvariable=self.status, wraplength=700).pack(anchor='w', pady=6)
-        ttk.Label(outer, text='检查或启动后窗口会最小化，请切回游戏。F8 或将鼠标移到屏幕角落可停止。', wraplength=700).pack(anchor='w', pady=4)
+        ttk.Label(outer, text='游戏需在主屏幕 16:9 全屏或无边框运行。检查或启动后切回游戏，F8 停止。', wraplength=700).pack(anchor='w', pady=4)
         self.preview_frame = ttk.Frame(outer)
         self.preview_frame.pack(fill='x', pady=8)
         self.preview_images = []
@@ -103,20 +109,20 @@ class App:
 
     def refresh(self):
         try:
-            c = engine.load_config()
+            c = workflow.settings(engine.load_config())
             for name, variable in self.fields.items():
                 variable.set(str(c[name]))
             try:
-                engine.validate(c)
-                self.summary.set('配置齐全。先检查分数识别，再进入新一轮点击阶段并开始。')
+                workflow.settings(c)
+                self.summary.set('已内置七图流程；只有识别到图一才能开始，体力/消耗为 0 或连续失败三次时停止。')
             except (ValueError, KeyError) as error:
                 self.summary.set(f'配置尚未完成：{error}')
             for child in self.preview_frame.winfo_children():
                 child.destroy()
             self.preview_images.clear()
             from PIL import Image, ImageTk
-            for name, label in (('goal', '分数区域'), ('stamina', '体力不足模板')):
-                path = engine.ROOT / c.get(name, {}).get('image', f'captures/{name}.png')
+            for name, label in (('home_start', '开始营业'), ('score_goal', '营业额'), ('cost_sample', '领取消耗')):
+                path = workflow.ASSETS / f'{name}.png'
                 if path.exists():
                     with Image.open(path) as source:
                         image = source.copy()
@@ -137,21 +143,38 @@ class App:
 
     def configure(self):
         from tkinter import messagebox
-        try:
-            engine.configure(self.root, self.refresh)
-        except Exception as error:
-            self.root.deiconify()
-            messagebox.showerror('配置失败', str(error), parent=self.root)
+        window = self.tk.Toplevel(self.root)
+        window.title('七图流程预设')
+        window.geometry('620x400')
+        text = ('① 图一：必须是店长特供关卡选择页面。\n'
+                '② 自动滚动左侧关卡栏，找到 3-10 钢！琴！家！，点击开始营业。\n'
+                '③ 图三倒计时与图四营业阶段：连续点击左侧锤子。\n'
+                '④ 营业额达到 1900：点击左上退出图标，等待图七。\n'
+                '⑤ 图七：读取领取下方消耗，非零时领取，返回图一。\n'
+                '⑥ 图五：点击重新挑战，直接等待倒计时；连续失败三次停止。\n'
+                '⑦ 都市体力或领取消耗连续确认为 0 时停止。\n\n'
+                '运行中 F8 手动停止，没有总时长和轮数上限。\n'
+                '未知界面或运行错误时暂停操作，等待恢复；F8 停止。\n'
+                '预设来自你提供的截图，需要主屏幕 16:9 全屏或无边框画面。')
+        self.ttk.Label(window, text=text, wraplength=570, padding=20).pack()
+        def use():
+            try:
+                engine.save_config(workflow.settings(engine.load_config()))
+                self.refresh()
+                window.destroy()
+            except Exception as error:
+                messagebox.showerror('保存失败', str(error), parent=window)
+        self.ttk.Button(window, text='使用预设并返回', command=use).pack(pady=10)
 
     def launch(self, mode):
         from tkinter import messagebox
         if self.busy:
             return
         try:
-            c = engine.load_config()
+            c = workflow.settings(engine.load_config())
             for name, variable in self.fields.items():
-                c[name] = int(variable.get()) if name == 'max_rounds' else float(variable.get())
-            engine.validate(c)
+                c[name] = float(variable.get())
+            workflow.settings(c)
             engine.save_config(c)
         except Exception as error:
             messagebox.showerror('请完成配置', str(error), parent=self.root)
@@ -160,7 +183,6 @@ class App:
         self.stop.clear()
         for button in (self.config_button, self.check_button, self.start_button):
             button.configure(state='disabled')
-        self.stop_button.configure(state='normal')
         self.status.set('正在运行；F8 停止。' if mode == 'run' else '正在检查画面。')
         self.log('窗口最小化，5 秒后处理游戏画面，请切回游戏。')
         self.root.iconify()
@@ -178,16 +200,15 @@ class App:
             listener.start()
             if self.stop.wait(5):
                 raise engine.Stopped('已取消')
-            desktop = engine.Desktop(config)
+            desktop = workflow.DesktopBackend(self.stop)
             if self.stop.is_set():
                 raise engine.Stopped('已停止')
             if mode == 'check':
-                goal = desktop.match('goal')
-                stamina = desktop.match('stamina')
-                emit(f'当前分数：{getattr(desktop, "last_score", None)}；达到目标：{goal}；体力不足：{stamina}')
-                emit('读不到分数或结果与游戏不符时，请重新框选区域。检查操作不会点击。')
+                scene = desktop.observe()
+                emit(f'当前界面：{scene.page}；营业额：{scene.score}；都市体力：{scene.city}；领取消耗：{scene.cost}')
+                emit('检查不会点击。开始运行必须是图一，未知界面会显示界面错误。')
             else:
-                engine.Runner(config, desktop, self.stop, log=emit).run()
+                workflow.Controller(config, desktop, self.stop, log=emit).run()
         except engine.Stopped as error:
             emit(str(error))
         except Exception as error:
@@ -207,7 +228,6 @@ class App:
                     self.busy = False
                     for button in (self.config_button, self.check_button, self.start_button):
                         button.configure(state='normal')
-                    self.stop_button.configure(state='disabled')
                     self.status.set('已结束，请查看日志。')
                     self.root.deiconify()
         except queue.Empty:
@@ -215,7 +235,10 @@ class App:
         self.root.after(100, self.poll)
 
     def close(self):
-        self.stop.set()
+        if self.busy:
+            from tkinter import messagebox
+            messagebox.showinfo('正在运行', '请先按 F8 停止，再关闭窗口。', parent=self.root)
+            return
         self.root.destroy()
 
 

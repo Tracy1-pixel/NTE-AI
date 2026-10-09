@@ -390,35 +390,35 @@ def configure(master=None, on_close=None):
 
 
 def main():
-    parser = argparse.ArgumentParser(description='异环店长特供：截图识别 + 区域连点')
-    parser.add_argument('command', choices=('configure', 'check', 'run'))
+    parser = argparse.ArgumentParser(description='异环店长特供七图流程')
+    parser.add_argument('command', choices=('configure', 'check', 'run'), nargs='?', default='configure')
     args = parser.parse_args()
+    from app import App, enable_dpi_awareness
+    enable_dpi_awareness()
     if args.command == 'configure':
-        configure()
+        import tkinter as tk
+        root = tk.Tk()
+        App(root)
+        root.mainloop()
         return
-    config = json.loads((ROOT / 'config.json').read_text('utf-8'))
-    validate(config)
-    desktop = Desktop(config)
+    import workflow
     if args.command == 'check':
-        print('当前画面识别：', {name: desktop.match(name) for name in ('goal', 'stamina')})
-        print('OCR 当前分数：', getattr(desktop, 'last_score', None))
+        print(workflow.DesktopBackend().observe())
         return
     from pynput import keyboard
     stop = threading.Event()
     def on_press(key):
-        # Esc is also sent by the script to open the game exit menu.
         if key == keyboard.Key.f8:
             stop.set()
     with keyboard.Listener(on_press=on_press):
-        print('5 秒后开始。将游戏置于前台的新一轮点击阶段。F8 或鼠标移到屏幕角落停止。')
-        runner = Runner(config, desktop, stop)
+        print('5 秒后开始，请打开图一。F8 停止。')
+        if stop.wait(5):
+            return
+        desktop = workflow.DesktopBackend(stop)
         try:
-            runner.wait(5)
-            runner.run()
+            workflow.Controller(load_config(), desktop, stop).run()
         except Stopped as error:
             print(error)
-        except desktop.pg.FailSafeException:
-            print('鼠标移至角落，已紧急停止')
 
 
 if __name__ == '__main__':
