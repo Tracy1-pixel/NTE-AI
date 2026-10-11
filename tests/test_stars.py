@@ -9,6 +9,7 @@ import numpy as np
 from automation import Stopped
 from nte_stars import StarAnchorDetector
 from nte_input import MoveResult
+from nte_cursor import CursorPosition
 from nte_window import ClientArea
 from nte_workflow import DesktopBackend, REFERENCE, ScreenReader
 
@@ -35,14 +36,16 @@ class StarTests(unittest.TestCase):
         frames = iter(frames)
         backend.frame = lambda: next(frames)
         backend.calls = []
+        backend.cursor_point = (0, 0)
         def move(*point):
+            backend.cursor_point = point
             backend.calls.append(('move', point))
             return MoveResult((0, 0), point, point)
         backend.mouse = SimpleNamespace(
             move=move, wait=lambda seconds: None,
             scroll=lambda ticks: backend.calls.append(('wheel', ticks)),
             click=lambda: backend.calls.append(('click', backend.calls[-1][1])))
-        backend.find_cursor = lambda: True
+        backend.cursor_position = lambda: CursorPosition(backend.cursor_point, 'Windows 光标')
         backend.log = lambda text: None
         return backend
 

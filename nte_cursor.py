@@ -1,10 +1,30 @@
 """Recognize the photographed game arrow by its pointed, concave outline.
 
-This is graphic recognition, not OCR. Only a small region around the actual
-mouse position is searched, so arrows elsewhere in the game are not targets.
+This is graphic recognition, not OCR. A software cursor is located in the
+game image independently of Windows coordinates; ambiguous arrows are rejected.
 Windows can draw a hardware cursor separately when screenshots omit it.
 """
 import sys
+from dataclasses import dataclass
+
+
+@dataclass(frozen=True)
+class CursorHit:
+    x: int
+    y: int
+    width: int
+    height: int
+    score: float
+
+    @property
+    def point(self):
+        return self.x, self.y
+
+
+@dataclass(frozen=True)
+class CursorPosition:
+    point: tuple
+    source: str
 
 
 class CursorDetector:
@@ -20,11 +40,20 @@ class CursorDetector:
         mask = np.zeros((112, 112), np.uint8)
         cv2.fillPoly(mask, [outline + 5], 255)
         self.reference = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)[0][0]
+        self.reference_mask = self.shape_mask(self.reference)
 
-    def matches(self, image):
-        if image is None or not image.size:
-            return False
+    def shape_mask(self, contour):
         cv, np = self.cv, self.np
+        x, y, width, height = cv.boundingRect(contour)
+        mask = np.zeros((height, width), np.uint8)
+        cv.drawContours(mask, [contour - (x, y)], -1, 255, -1)
+        return cv.resize(mask, (100, 100), interpolation=cv.INTER_NEAREST)
+
+    def candidates(self, image, oriented=False):
+        if image is None or not image.size:
+            return []
+        cv, np = self.cv, self.np
+        hits = []
         gray = cv.cvtColor(image, cv.COLOR_BGR2GRAY)
         edges = cv.Canny(gray, 40, 110)
         edges = cv.morphologyEx(edges, cv.MORPH_CLOSE, np.ones((3, 3), np.uint8))
@@ -32,16 +61,57 @@ class CursorDetector:
         for mask in (edges, bright):
             contours, _ = cv.findContours(mask, cv.RETR_LIST, cv.CHAIN_APPROX_SIMPLE)
             for contour in contours:
-                _, _, width, height = cv.boundingRect(contour)
+                x, y, width, height = cv.boundingRect(contour)
                 area = cv.contourArea(contour)
                 if not (12 <= height <= 110 and 0.7 <= width / height <= 1.2 and area >= 45):
                     continue
                 hull_area = cv.contourArea(cv.convexHull(contour))
                 if not hull_area or not 0.65 <= area / hull_area <= 0.94:
                     continue
-                if cv.matchShapes(self.reference, contour, cv.CONTOURS_MATCH_I1, 0) <= 0.16:
-                    return True
-        return False
+                score = cv.matchShapes(self.reference, contour, cv.CONTOURS_MATCH_I1, 0)
+                if score <= 0.16:
+                    if oriented:
+                        # Hu descriptors ignore orientation. Text and furniture
+                        # edges can match them; require the photographed arrow's
+                        # upright silhouette before locating it in a whole frame.
+                        shape = self.shape_mask(contour)
+                        overlap = cv.countNonZero(cv.bitwise_and(shape, self.reference_mask))
+                        union = cv.countNonZero(cv.bitwise_or(shape, self.reference_mask))
+                        if not union or overlap / union < 0.8:
+                            continue
+                    hits.append(CursorHit(x, y, width, height, float(score)))
+        # Edge / fill / inner outline of the same pointer form one candidate.
+        unique = []
+        for hit in sorted(hits, key=lambda item: item.score):
+            if not any(max(abs(hit.x - other.x), abs(hit.y - other.y)) <= 8 for other in unique):
+                unique.append(hit)
+        return unique
+
+    def matches(self, image):
+        return bool(self.candidates(image))
+
+    def locate(self, frame, previous=None, reacquire=True):
+        """Return a unique arrow tip, or None when absent / ambiguous.
+
+        Track in a bounded area around the last image-confirmed position. Never
+        use the desired destination to choose among otherwise ambiguous arrows.
+        """
+        if previous is not None:
+            x, y = previous
+            height, width = frame.shape[:2]
+            left, top = max(0, x - 200), max(0, y - 200)
+            right, bottom = min(width, x + 312), min(height, y + 312)
+            if left < right and top < bottom:
+                hits = self.candidates(frame[top:bottom, left:right], oriented=True)
+                if len(hits) == 1:
+                    hit = hits[0]
+                    return CursorHit(hit.x + left, hit.y + top, hit.width, hit.height, hit.score)
+                if hits:
+                    return None
+            if not reacquire:
+                return None
+        hits = self.candidates(frame, oriented=True)
+        return hits[0] if len(hits) == 1 else None
 
     def near_pointer(self, frame, x, y):
         height, width = frame.shape[:2]

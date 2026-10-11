@@ -6,6 +6,7 @@ from types import SimpleNamespace
 from automation import Stopped
 from nte_input import Input, MouseAPI, WindowsMouse
 from nte_workflow import DesktopBackend
+from nte_cursor import CursorPosition
 
 
 class API:
@@ -152,7 +153,8 @@ class InputTests(unittest.TestCase):
         backend.mouse = self.mouse(API())
         backend.point = lambda x, y: (x, y)
         backend.guard = lambda: None
-        backend.find_cursor = lambda: False
+        positions = iter([CursorPosition((600, 400), 'Windows 光标'), None, None, None])
+        backend.cursor_position = lambda: next(positions, None)
         logs = []
         backend.log = logs.append
         with self.assertRaisesRegex(ValueError, '未确认游戏光标'):

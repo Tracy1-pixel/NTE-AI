@@ -169,7 +169,7 @@ class App:
         self.busy = False
         self.runtime = RuntimeStatus()
         self.overlay = None
-        root.title('异环助手 · 店长特供 1.1.0')
+        root.title('异环助手 · 店长特供 1.1.0（光标反馈调试）')
         root.geometry('980x820')
         root.minsize(920, 760)
         root.configure(bg='#0b1220')
@@ -427,6 +427,21 @@ class App:
                 emit('鼠标诊断（只读）：' + MouseAPI().diagnostics(handle))
                 area = api.geometry(handle)
                 emit(f'游戏内容区 {area.region()}；当前是否前台={api.foreground(handle)}。诊断未移动、点击、滚动或修改鼠标限制。')
+                if api.foreground(handle) and not api.minimized(handle):
+                    try:
+                        import cv2
+                        import numpy as np
+                        import pyautogui
+                        from nte_cursor import CursorDetector, windows_cursor_bitmap
+                        detector = CursorDetector()
+                        frame = cv2.cvtColor(np.asarray(pyautogui.screenshot(region=area.region())), cv2.COLOR_RGB2BGR)
+                        hits = detector.candidates(frame, oriented=True)
+                        points = [(area.x + hit.x, area.y + hit.y) for hit in hits[:5]]
+                        hardware = windows_cursor_bitmap()
+                        hardware_matches = bool(hardware and detector.matches(hardware[0]))
+                        emit(f'光标定位诊断：画面候选数={len(hits)}，候选位置={points}；Windows 光标轮廓符合目标={hardware_matches}。画面光标按图像位置反馈，系统光标按系统坐标反馈。')
+                    except Exception as error:
+                        emit(f'光标图形诊断未完成：{error}；上方坐标 / 权限诊断仍可使用。')
                 self.events.put(('runtime', {'phase': '诊断完成', 'state': 'stopped', 'details': '鼠标诊断完成，请复制运行记录中的诊断信息'}))
                 return
             desktop = workflow.DesktopBackend(self.stop, config['window_title'], handle, prepare=(mode == 'run'), capture_shield=self.overlay.shield if self.overlay else None, log=emit)

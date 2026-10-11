@@ -324,19 +324,40 @@ class DesktopBackend:
     def point(self, x, y):
         return self.window.area().point(x, y, REFERENCE)
 
-    def find_cursor(self):
-        from nte_cursor import windows_cursor_bitmap
-        frame = self.frame()
+    def cursor_position(self, visual_only=False):
+        from nte_cursor import CursorPosition, windows_cursor_bitmap
         area = self.window.area()
-        x, y = self.pg.position()
-        if self.cursor_detector.near_pointer(frame, x - area.x, y - area.y):
-            return True
-        cursor = windows_cursor_bitmap()
-        if cursor:
-            bitmap, (x, y) = cursor
-            if area.x <= x < area.x + area.width and area.y <= y < area.y + area.height:
-                return self.cursor_detector.matches(bitmap)
-        return False
+        def hardware():
+            cursor = windows_cursor_bitmap()
+            if cursor:
+                bitmap, (x, y) = cursor
+                if area.x <= x < area.x + area.width and area.y <= y < area.y + area.height and self.cursor_detector.matches(bitmap):
+                    self.cursor_mode = 'Windows 光标'
+                    return CursorPosition((x, y), 'Windows 光标')
+            return None
+        # A known hardware cursor is read directly; fast hammer clicks must not
+        # require full-screen computer vision on every input event.
+        if not visual_only and getattr(self, 'cursor_mode', None) == 'Windows 光标':
+            cursor = hardware()
+            if cursor is not None:
+                return cursor
+        frame = self.frame()
+        previous = getattr(self, 'last_visual_cursor', None)
+        local = (previous[0] - area.x, previous[1] - area.y) if previous else None
+        hit = self.cursor_detector.locate(frame, previous=local, reacquire=not visual_only)
+        if hit is not None:
+            point = (area.x + hit.x, area.y + hit.y)
+            self.last_visual_cursor = point
+            self.cursor_mode = '游戏画面'
+            return CursorPosition(point, '游戏画面')
+        return None if visual_only else hardware()
+
+    def find_cursor(self):
+        return self.cursor_position() is not None
+
+    def visual_cursor_position(self):
+        cursor = self.cursor_position(visual_only=True)
+        return cursor.point if cursor is not None else None
 
     def find_star_anchor(self):
         frame = self.reader.cv.resize(self.frame(), REFERENCE)
@@ -344,17 +365,30 @@ class DesktopBackend:
         return self.star_detector.find(frame)
 
     def move_verified(self, x, y, label):
-        result = self.mouse.move(*self.point(x, y))
-        self.guard()
-        # OS coordinates alone do not prove that a software-rendered game
-        # cursor followed the event. Require the photographed arrow near target.
-        for _ in range(3):
-            if self.find_cursor():
-                self.log(f'{label}（{result.method}）：系统光标 {result.before} → {result.after}，目标 {result.target}；目标附近游戏光标已确认')
-                return result
-            self.mouse.wait(0.1)
+        cursor = self.cursor_position()
+        if cursor is None:
+            raise ValueError('未能唯一定位游戏光标，暂停移动和点击')
+        target = self.point(x, y)
+        if cursor.source == '游戏画面':
+            result = self.mouse.move_visual(*target, self.visual_cursor_position, initial=cursor.point)
             self.guard()
-        raise ValueError(f'{label}：系统光标 {result.before} → {result.after}，但目标附近未确认游戏光标；暂停点击，请检查游戏是否接收输入')
+            message = f'{label}（{result.method}）：画面光标 {result.before} → {result.after}，目标 {result.target}；系统坐标 {self.mouse.api.position()}；画面位置已确认'
+        else:
+            result = self.mouse.move(*target)
+            self.guard()
+            for _ in range(3):
+                confirmed = self.cursor_position()
+                if confirmed is not None and max(abs(confirmed.point[0]-target[0]), abs(confirmed.point[1]-target[1])) <= 8:
+                    message = f'{label}（{result.method}）：系统光标 {result.before} → {result.after}，目标 {result.target}；目标附近游戏光标已确认'
+                    break
+                self.mouse.wait(0.1)
+                self.guard()
+            else:
+                raise ValueError(f'{label}：系统光标 {result.before} → {result.after}，但目标附近未确认游戏光标；暂停点击，请检查游戏是否接收输入')
+        if message != getattr(self, 'last_mouse_message', None):
+            self.log(message)
+            self.last_mouse_message = message
+        return result
 
     def move_to_anchor(self, anchor):
         return self.move_verified(*anchor.center, '移动到三星锚点')
@@ -398,7 +432,7 @@ class DesktopBackend:
                 labels = {'start': '开始营业', 'exit': '退出', 'claim': '领取奖励', 'retry': '重新挑战'}
                 self.move_verified(*points[name], f'移动到{labels[name]}按钮')
             else:
-                self.mouse.move(*self.point(*points[name]))
+                self.move_verified(*points[name], '移动到锤子')
             self.guard()
             self.mouse.click()
 

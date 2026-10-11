@@ -182,6 +182,48 @@ class WindowsMouse:
                 attempts.append(f'{name}失败：{error}')
         raise ValueError(f'鼠标移动未确认：原位置 {before}，目标 {target}，实际 {actual}；范围 {clip}；' + '；'.join(attempts) + '；暂停点击。若即时到达后又返回原点，可能是游戏重置光标；若始终不变，需结合鼠标诊断检查权限或输入拦截')
 
+    def move_visual(self, x, y, position, initial=None):
+        """Drive an image-located game cursor with relative-event feedback.
+
+        Raw-input UIs may hold the OS pointer fixed while their own cursor moves.
+        GetCursorPos and ClipCursor therefore describe the OS pointer only; they
+        are diagnostics, not a destination constraint for this feedback mode.
+        """
+        self.guard()
+        target = (round(x), round(y))
+        before = initial if initial is not None else position()
+        if before is None:
+            raise ValueError('无法唯一定位画面中的游戏光标，暂停移动和点击')
+        if max(abs(before[0]-target[0]), abs(before[1]-target[1])) <= 8:
+            return MoveResult(before, before, target, '画面光标反馈 / 相对输入')
+        actual, unchanged = before, 0
+        for _ in range(48):
+            self.guard()
+            dx, dy = target[0] - actual[0], target[1] - actual[1]
+            if max(abs(dx), abs(dy)) <= 8:
+                # Take a fresh observation at the destination; never use the
+                # Windows pointer or the last commanded position as feedback.
+                self.wait(0.02)
+                confirmed = position()
+                if confirmed is None:
+                    raise ValueError('目标附近游戏光标丢失，暂停点击')
+                if max(abs(confirmed[0]-target[0]), abs(confirmed[1]-target[1])) <= 8:
+                    return MoveResult(before, confirmed, target, '画面光标反馈 / 相对输入')
+                actual = confirmed
+                continue
+            step = lambda d: max(-72, min(72, round(d / 2))) if abs(d) > 8 else 0
+            self.api.send(0x0001, step(dx), step(dy))
+            self.wait(0.04)
+            self.guard()
+            after = position()
+            if after is None:
+                raise ValueError(f'移动后游戏光标丢失或识别有歧义；目标 {target}，上次画面位置 {actual}；暂停点击')
+            unchanged = unchanged + 1 if max(abs(after[0]-actual[0]), abs(after[1]-actual[1])) <= 2 else 0
+            actual = after
+            if unchanged >= 3:
+                break
+        raise ValueError(f'游戏画面中的光标移动未确认：原位置 {before}，目标 {target}，画面实际 {actual}；系统坐标 {self.api.position()}，活动范围 {self.api.clip_rect()}。相对输入后画面光标仍未到达，暂停点击')
+
     def click(self):
         self.guard()
         self.api.send(0x0002)  # left down
