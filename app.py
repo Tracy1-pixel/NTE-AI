@@ -169,6 +169,64 @@ def self_test(report):
             if api.outer(app.overlay.hwnd)[:2] != overlay_position(area):
                 raise RuntimeError('状态栏未跟随游戏左下角')
             app.overlay.hide()
+            from nte_hotkey import F8StopMonitor, WindowsF8, VK_F8
+            from nte_input import Input, InputData, KeyboardInput
+            def key_packet(up=False):
+                return Input(1, InputData(ki=KeyboardInput(VK_F8, 0, 2 if up else 0, 0, 0)))
+            def send_key(up=False):
+                packet = key_packet(up)
+                if mouse.api.u.SendInput(1, ct.byref(packet), ct.sizeof(Input)) != 1:
+                    raise RuntimeError('Windows F8 输入自检发送失败')
+            class MessageOnly(WindowsF8):
+                def key_pressed(self):
+                    return False
+            class PollingOnly(WindowsF8):
+                def register(self):
+                    return False
+            # Exercise a real short F8 press while the helper is minimized and
+            # a separate foreground test window has focus. No game is involved.
+            app.busy = True
+            app.stop.clear()
+            root.iconify()
+            probe.deiconify()
+            probe.lift()
+            probe.focus_force()
+            api.activate(hwnd)
+            root.update()
+            if not api.foreground(hwnd):
+                raise RuntimeError('F8 自检窗口未取得前台')
+            with F8StopMonitor(app.stop, on_stop=lambda reason: app.events.put(('cancel', reason)), api_factory=MessageOnly) as monitor:
+                if not monitor.registered:
+                    raise RuntimeError('Windows 全局 F8 热键注册自检失败')
+                packets = (Input * 2)(key_packet(), key_packet(True))
+                if mouse.api.u.SendInput(2, packets, ct.sizeof(Input)) != 2:
+                    raise RuntimeError('Windows 短按 F8 自检发送失败')
+                if not app.stop.wait(2):
+                    raise RuntimeError('Windows 全局 F8 未收到真实按键')
+                if not monitor.reason.startswith('已收到 F8'):
+                    raise RuntimeError('Windows 全局 F8 来源未确认')
+            app.poll()
+            root.update()
+            if app.runtime.phase != '正在停止' or root.state() != 'normal':
+                raise RuntimeError('F8 停止状态 / GUI 恢复自检失败')
+            app.busy = False
+            app.stop.clear()
+            api.activate(hwnd)
+            probe.focus_force()
+            root.update()
+            with F8StopMonitor(app.stop, api_factory=PollingOnly) as monitor:
+                try:
+                    send_key()
+                    if not app.stop.wait(2):
+                        raise RuntimeError('Windows F8 独立按键检测未生效')
+                    if not monitor.reason.startswith('已收到 F8'):
+                        raise RuntimeError('Windows F8 独立检测来源未确认')
+                finally:
+                    send_key(True)
+            app.stop.clear()
+            app.runtime = RuntimeStatus(mode='progression', level='2-7', goal=None)
+            app.update_mode()
+            app.paint_status()
             probe.destroy()
             # Save a preview of the actual packaged GUI for the build artifacts.
             root.deiconify()
@@ -176,7 +234,7 @@ def self_test(report):
             area = api.geometry(int(api.u.GetAncestor(root.winfo_id(), 2)))
             pyautogui.screenshot(region=area.region()).save(str(Path(report).with_suffix('.png')))
         app.close()
-        data = {'status': 'passed', 'score': 1900, 'gui': 'passed', 'progression_controls': 'passed', 'level_ocr': 'passed', 'star_anchors': 'passed', 'cursor_capture': 'passed', 'mouse_input': 'passed', 'stop_button': 'passed', 'overlay': 'passed', 'window_geometry': 'passed', 'frozen': bool(getattr(sys, 'frozen', False))}
+        data = {'status': 'passed', 'score': 1900, 'gui': 'passed', 'f8_global': 'passed', 'f8_polling': 'passed', 'f8_gui_restore': 'passed', 'progression_controls': 'passed', 'level_ocr': 'passed', 'star_anchors': 'passed', 'cursor_capture': 'passed', 'mouse_input': 'passed', 'stop_button': 'passed', 'overlay': 'passed', 'window_geometry': 'passed', 'frozen': bool(getattr(sys, 'frozen', False))}
         code = 0
     except Exception as error:
         data, code = {'status': 'failed', 'error': str(error)}, 1
@@ -194,10 +252,11 @@ class App:
         self.busy = False
         self.runtime = RuntimeStatus()
         self.overlay = None
-        root.title('异环助手 · 店长特供 1.1.13')
+        root.title('异环助手 · 店长特供 1.1.14')
         root.geometry('980x820')
         root.minsize(920, 760)
         root.configure(bg='#0b1220')
+        root.bind('<F8>', lambda event: self.request_stop())
         root.protocol('WM_DELETE_WINDOW', self.close)
         style = ttk.Style(root)
         style.theme_use('clam')
@@ -229,7 +288,7 @@ class App:
         tk.Label(sidebar, text='NTE', bg='#101b31', fg='#42ddbc', font=('Segoe UI', 30, 'bold'), anchor='w').pack(fill='x')
         tk.Label(sidebar, text='异环助手', bg='#101b31', fg='#eef5ff', font=('Microsoft YaHei UI', 17, 'bold'), anchor='w').pack(fill='x', pady=(4, 30))
         ttk.Button(sidebar, text='店长特供', style='Accent.TButton', command=lambda: root.deiconify()).pack(fill='x', pady=5)
-        tk.Label(sidebar, text='当前游戏窗口\n自动读取尺寸\n\nv1.1.13', bg='#101b31', fg='#61738d', justify='left', font=('Segoe UI', 10), anchor='sw').pack(side='bottom', fill='x')
+        tk.Label(sidebar, text='当前游戏窗口\n自动读取尺寸\n\nv1.1.14', bg='#101b31', fg='#61738d', justify='left', font=('Segoe UI', 10), anchor='sw').pack(side='bottom', fill='x')
 
         outer = ttk.Frame(root, padding=(24, 22))
         outer.pack(fill='both', expand=True)
@@ -412,15 +471,12 @@ class App:
         threading.Thread(target=self.worker, args=(mode, c, handle), daemon=True).start()
 
     def worker(self, mode, config, handle):
-        listener = None
+        monitor = None
         emit = lambda text: self.events.put(('log', text))
         try:
-            from pynput import keyboard
-            def on_press(key):
-                if key == keyboard.Key.f8:
-                    self.stop.set()
-            listener = keyboard.Listener(on_press=on_press)
-            listener.start()
+            from nte_hotkey import F8StopMonitor
+            monitor = F8StopMonitor(self.stop, on_stop=lambda reason: self.events.put(('cancel', reason)), log=emit)
+            monitor.start()
             if self.stop.wait(5):
                 raise engine.Stopped('已取消')
             if mode == 'diagnose':
@@ -457,17 +513,18 @@ class App:
                 emit(f'当前界面：{scene.page}；目标关卡：{level}；营业额：{scene.score} / {scene.goal}；都市体力：{scene.city}；领取消耗：{scene.cost}')
                 emit('检查不会点击或改变窗口尺寸。使用当前内容区；开始运行必须是图一。')
             else:
-                emit(f'版本 1.1.13：{workflow.MODES[config["mode"]]}；开始关卡 {config["start_level"] if config["mode"] == "progression" else "3-10"}；滚动间隔 {config["scroll_interval"]} 秒。')
+                emit(f'版本 1.1.14：{workflow.MODES[config["mode"]]}；开始关卡 {config["start_level"] if config["mode"] == "progression" else "3-10"}；滚动间隔 {config["scroll_interval"]} 秒。')
                 workflow.Controller(config, desktop, self.stop, log=emit, report=lambda data: self.events.put(('runtime', data))).run()
         except engine.Stopped as error:
-            emit(str(error))
-            self.events.put(('runtime', {'phase': '已停止', 'state': 'stopped', 'details': str(error)}))
+            reason = monitor.reason.replace('正在停止自动操作', '自动操作已停止') if monitor and monitor.reason else str(error)
+            emit(reason)
+            self.events.put(('runtime', {'phase': '已停止', 'state': 'stopped', 'details': reason}))
         except Exception as error:
             emit(f'已停止：{error}')
             self.events.put(('runtime', {'phase': '运行失败', 'state': 'error', 'details': str(error)}))
         finally:
-            if listener:
-                listener.stop()
+            if monitor:
+                monitor.close()
             self.events.put(('done', None))
 
     def poll(self):
@@ -479,6 +536,15 @@ class App:
                 elif kind == 'runtime':
                     self.runtime.apply(payload)
                     self.paint_status()
+                elif kind == 'cancel':
+                    if self.busy:
+                        self.request_stop()
+                        self.runtime.details = payload + '；等待当前识别结束，不再发送鼠标操作'
+                        self.paint_status()
+                        self.log(payload)
+                        if self.overlay:
+                            self.overlay.hide()
+                        self.root.deiconify()
                 else:
                     self.busy = False
                     self.stop_button.configure(state='disabled')

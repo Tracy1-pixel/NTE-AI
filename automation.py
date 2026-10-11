@@ -411,12 +411,9 @@ def main():
         time.sleep(5)
         print(workflow.DesktopBackend(title=load_config().get('window_title', ''), prepare=False).observe())
         return
-    from pynput import keyboard
+    from nte_hotkey import F8StopMonitor
     stop = threading.Event()
-    def on_press(key):
-        if key == keyboard.Key.f8:
-            stop.set()
-    with keyboard.Listener(on_press=on_press):
+    with F8StopMonitor(stop, log=print):
         print('5 秒后开始，请打开图一。F8 停止。')
         if stop.wait(5):
             return

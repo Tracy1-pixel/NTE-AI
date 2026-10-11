@@ -90,6 +90,29 @@ class ProgressionTests(unittest.TestCase):
         self.assertEqual(game.claimed_levels, ['3-9', '3-10'])
         self.assertEqual(controller.failures, 0)
 
+    def test_selected_middle_start_continues_to_final_level(self):
+        game = ProgressGame(city=10000)
+        controller, _ = self.make(game, '2-4')
+        with self.assertRaisesRegex(Stopped, '闯关完成'):
+            controller.run()
+        self.assertEqual(game.started_levels, list(LEVELS[LEVELS.index('2-4'):]))
+        self.assertEqual(game.claimed_levels[-1], '3-10')
+        self.assertEqual(controller.completed, 17)
+
+    def test_user_cancel_after_claim_prevents_starting_the_next_level(self):
+        game = ProgressGame(city=10000)
+        controller, stop = self.make(game, '2-4')
+        action = game.action
+        def cancel_after_claim(name):
+            action(name)
+            if name == 'claim':
+                stop.set()
+        game.action = cancel_after_claim
+        with self.assertRaisesRegex(Stopped, 'F8'):
+            controller.run()
+        self.assertEqual(game.started_levels, ['2-4'])
+        self.assertEqual(game.claimed_levels, ['2-4'])
+
     def test_three_failures_stop_without_skipping_level(self):
         game = ProgressGame(outcomes=['failure'] * 3)
         controller, _ = self.make(game)
