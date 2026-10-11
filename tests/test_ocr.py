@@ -49,11 +49,44 @@ class NumberTests(unittest.TestCase):
         scene = reader.inspect(frame)
         self.assertEqual((scene.page, scene.city, scene.selected), ('home', 652, True))
 
+    def test_other_level_heading_is_read_fresh_and_requires_exact_number(self):
+        reader = self.reader(None)
+        reader.ocr.side_effect = [([['1-1 新品练习', 0.95]], None),
+                                  ([['1-10 新品练习', 0.95]], None)]
+        frame = cv2.imread(str(ASSETS / 'star_triplet.png'))
+        self.assertTrue(reader.game_title_matches(frame, '1-1'))
+        self.assertFalse(reader.game_title_matches(frame, '1-1'))
+        self.assertEqual(reader.ocr.call_count, 2)
+
+    def test_unreliable_heading_uses_full_ocr_before_accepting_level(self):
+        reader = self.reader([['1-1', 0.4]], fallback='2-1 下一章')
+        frame = cv2.imread(str(ASSETS / 'star_triplet.png'))
+        self.assertFalse(reader.game_title_matches(frame, '1-1'))
+        reader.text.assert_called_once()
+
+    def test_other_level_score_uses_its_own_goal_and_requires_correct_heading(self):
+        reader = self.reader(None)
+        reader.cv = cv2
+        reader.matches = lambda frame, name, box, threshold=0.82: name == 'hammer'
+        reader.ocr.side_effect = [([['1-1 新品练习', 0.95]], None),
+                                  ([['727/700', 0.95]], None),
+                                  ([['1-10', 0.95]], None)]
+        frame = cv2.imread(str(ASSETS / 'star_triplet.png'))
+        scene = reader.inspect(frame, target_level='1-1')
+        self.assertEqual((scene.page, scene.score, scene.goal), ('playing', 727, 700))
+        self.assertEqual(reader.inspect(frame, target_level='1-1').page, 'unknown')
+
 
 class RealNumberTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.reader = ScreenReader()
+
+    def test_player_first_level_identifier_without_a_name_template(self):
+        image = cv2.imread(str(ASSETS / 'level_first_sample.png'))
+        self.assertIsNotNone(image)
+        self.assertTrue(self.reader.is_level(self.reader.text(image), '1-1'))
+        self.assertFalse(self.reader.is_level(self.reader.text(image), '1-10'))
 
     def test_player_number_crops_at_multiple_client_scales(self):
         for name, expected, parser in (('score_zero', 0, parse_score), ('score_goal', 1927, parse_score), ('city_sample', 652, fraction), ('cost_sample', 48, integer)):

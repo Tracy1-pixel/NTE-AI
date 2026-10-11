@@ -17,7 +17,7 @@ class Game:
         self.retry_delay = 0
         self.level_visible = False
 
-    def observe(self, *, read_selected=True):
+    def observe(self, *, read_selected=True, target_level='3-10'):
         if self.retry_delay:
             self.retry_delay -= 1
             if not self.retry_delay:
@@ -54,7 +54,7 @@ class Game:
             self.level_visible = True
             return True
 
-    def select_level(self):
+    def select_level(self, target_level='3-10'):
         self.actions.append('select_level')
         if not self.level_visible:
             return False
@@ -114,13 +114,13 @@ class WorkflowTests(unittest.TestCase):
         controller, stop = self.make(game)
         observe = game.observe
         failures = []
-        def lose_foreground(*, read_selected=True):
+        def lose_foreground(*, read_selected=True, target_level='3-10'):
             if 'scroll_step' in game.actions:
                 failures.append(controller.clock())
                 if len(failures) >= 3:
                     stop.set()
                 raise ValueError('游戏不在前台')
-            return observe(read_selected=read_selected)
+            return observe(read_selected=read_selected, target_level=target_level)
         game.observe = lose_foreground
         with self.assertRaisesRegex(Stopped, 'F8'):
             controller.run()
@@ -281,8 +281,8 @@ class WorkflowTests(unittest.TestCase):
         class UnknownAfterHammer(Game):
             seen_unknown = False
             unsafe_clicks = 0
-            def observe(self, *, read_selected=True):
-                scene = super().observe(read_selected=read_selected)
+            def observe(self, *, read_selected=True, target_level='3-10'):
+                scene = super().observe(read_selected=read_selected, target_level=target_level)
                 if scene.page == 'unknown':
                     self.seen_unknown = True
                 return scene

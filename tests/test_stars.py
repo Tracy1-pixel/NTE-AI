@@ -138,6 +138,32 @@ class StarTests(unittest.TestCase):
         point = backend.point(100, 355)
         self.assertEqual(backend.calls, [('move', point), ('click', point)])
 
+    def test_progression_search_chooses_scroll_direction_from_visible_numbers(self):
+        box = [[50, 200], [150, 200], [150, 230], [50, 230]]
+        for target, visible, direction in (('1-1', ['3-4', '3-10'], 1), ('3-10', ['1-1', '1-6'], -1), ('1-3', ['1-1', '1-6'], 0)):
+            with self.subTest(target=target):
+                backend = self.backend([self.frame()])
+                backend.reader.is_level = ScreenReader.is_level
+                backend.reader.ocr = lambda image: ([[box, value, 0.99] for value in visible], None)
+                self.assertFalse(backend.select_level(target))
+                self.assertEqual(backend.search_direction, direction)
+                self.assertEqual(backend.calls, [])
+
+    def test_progression_upward_scroll_still_uses_verified_triplet(self):
+        backend = self.backend([self.frame()] * 3)
+        backend.search_direction = 1
+        backend.scroll_step()
+        self.assertEqual(backend.calls, [('move', backend.point(229, 682.5)), ('wheel', 3)])
+
+    def test_duplicate_target_rows_do_not_trigger_a_click(self):
+        backend = self.backend([self.frame()])
+        box = [[50, 200], [150, 200], [150, 230], [50, 230]]
+        backend.reader.is_level = ScreenReader.is_level
+        backend.reader.ocr = lambda image: ([[box, '1-1', 0.99], [box, '1-1', 0.99]], None)
+        with self.assertRaisesRegex(ValueError, '多个候选'):
+            backend.select_level('1-1')
+        self.assertEqual(backend.calls, [])
+
 
 if __name__ == '__main__':
     unittest.main()

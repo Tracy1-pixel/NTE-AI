@@ -15,11 +15,38 @@ from nte_status import PHASES
 
 REFERENCE = (2559, 1439)
 ASSETS = Path(getattr(sys, '_MEIPASS', Path(__file__).resolve().parent)) / 'assets' / 'pianist'
+LEVELS = tuple(f'{chapter}-{level}' for chapter in range(1, 4) for level in range(1, 11))
+MODES = {'loop': '钢琴家循环', 'progression': '闯关模式'}
+
+
+def level_ids(text):
+    normalized = unicodedata.normalize('NFKC', text)
+    normalized = re.sub(r'\s', '', normalized).replace('—', '-').replace('一', '-')
+    return [f'{chapter}-{level}' for chapter, level in re.findall(r'(?<!\d)([1-3])[-–.](10|[0-9])(?!\d)', normalized)]
+
+
+def normalize_level(value):
+    if not isinstance(value, str):
+        raise ValueError('开始关卡必须是关卡编号')
+    normalized = unicodedata.normalize('NFKC', value).strip().replace('.', '-').replace('–', '-').replace('—', '-')
+    if normalized not in LEVELS:
+        raise ValueError('开始关卡须为 1-1～1-10、2-1～2-10 或 3-1～3-10')
+    return normalized
+
+
+def score_progress(text):
+    compact = re.sub(r'[\s,，]', '', text).replace('／', '/')
+    match = re.fullmatch(r'(\d{1,5})/+(\d{1,5})', compact)
+    if not match:
+        return None
+    score, goal = map(int, match.groups())
+    return (score, goal) if goal > 0 and score <= goal * 3 else None
 
 
 def settings(saved=None):
     c = {'click_interval': 0.08, 'scan_interval': 0.25, 'scroll_interval': 0.1, 'confirm_frames': 3,
-         'transition_timeout': 30.0, 'workflow_version': 5, 'window_title': ''}
+         'transition_timeout': 30.0, 'workflow_version': 6, 'window_title': '',
+         'mode': 'loop', 'start_level': '1-1'}
     for key in c:
         if key != 'workflow_version' and key in (saved or {}):
             c[key] = saved[key]
@@ -32,6 +59,9 @@ def settings(saved=None):
         raise ValueError('连续确认帧数至少为 2')
     if not isinstance(c['window_title'], str):
         raise ValueError('游戏窗口标题必须为文字')
+    if not isinstance(c['mode'], str) or c['mode'] not in MODES:
+        raise ValueError('请选择钢琴家循环或闯关模式')
+    c['start_level'] = normalize_level(c['start_level'])
     return c
 
 
@@ -56,6 +86,7 @@ class Scene:
     city: int | None = None
     cost: int | None = None
     selected: bool = False
+    goal: int | None = None
 
 
 class Controller:
@@ -66,19 +97,25 @@ class Controller:
         self.completed = 0
         self.last_message = None
         self.report = report
+        self.level_index = LEVELS.index(self.c['start_level'])
+        self.level = self.c['start_level'] if self.c['mode'] == 'progression' else '3-10'
+        self.goal = None if self.c['mode'] == 'progression' else 1900
 
     def publish(self, state, scene=None, reason=''):
         if self.report:
             paused = bool(reason) or (scene is not None and scene.page == 'unknown')
             phase = '已暂停' if paused else PHASES.get(state, state)
+            if not paused and state == 'select':
+                phase = f'OCR 寻找 {self.level}'
             if state in ('cursor', 'anchor') and scene is not None and scene.page == 'home':
                 phase = PHASES[state]
             if scene is not None and scene.page == 'ready' and state == 'playing':
                 phase = '倒计时连点'
             self.report({'phase': phase, 'state': 'paused' if paused else 'running',
-                         'details': reason or ('界面错误，等待识别恢复' if paused else phase),
+                         'details': reason or ('界面错误，等待识别恢复' if paused else f'{MODES[self.c["mode"]]} · 当前关卡 {self.level} · {phase}'),
                          'score': scene.score if scene else None,
-                         'completed': self.completed, 'failures': self.failures})
+                         'completed': self.completed, 'failures': self.failures,
+                         'mode': self.c['mode'], 'level': self.level, 'goal': self.goal})
 
     def check(self):
         if self.stop.is_set():
@@ -126,7 +163,13 @@ class Controller:
                         self.action('hammer')
                     self.wait(self.c['click_interval'])
                     continue
-                scene = self.b.observe(read_selected=(state == 'selected'))
+                scene = self.b.observe(read_selected=(state == 'selected'), target_level=self.level)
+                if scene.page not in ('ready', 'playing'):
+                    score_frames = 0
+                if self.c['mode'] == 'progression' and scene.page in ('ready', 'playing'):
+                    if self.goal != scene.goal:
+                        score_frames = 0
+                    self.goal = scene.goal
                 if state == 'cursor' and scene.page != 'home':
                     cursor_frames = 0
                 self.publish(state, scene)
@@ -137,7 +180,17 @@ class Controller:
                 if state == 'claiming' and page_frames['home'] >= self.c['confirm_frames']:
                     self.completed += 1
                     self.failures = 0
-                    self.message(f'领取完成，已完成 {self.completed} 轮，返回图一继续')
+                    if self.c['mode'] == 'progression':
+                        self.message(f'{self.level} 领取完成，已完成 {self.completed} 关')
+                        if self.level_index == len(LEVELS) - 1:
+                            self.publish('home', scene)
+                            raise Stopped(f'闯关完成：已领取 3-10 奖励，共完成 {self.completed} 关')
+                        self.level_index += 1
+                        self.level = LEVELS[self.level_index]
+                        self.goal = None
+                        self.message(f'已确认返回选关界面，下一关 {self.level}')
+                    else:
+                        self.message(f'领取完成，已完成 {self.completed} 轮，返回图一继续')
                     state, since = 'home', self.clock()
                     self.publish(state, scene)
                 city_visible = scene.page in ('home', 'success')
@@ -175,19 +228,26 @@ class Controller:
                         self.b.move_to_anchor(anchor)
                         at_bottom = False
                         state, since = 'select', self.clock()
-                        self.message('光标移动已核验，逐批滚动并 OCR 寻找 3-10')
+                        self.message(f'光标移动已核验，逐批滚动并 OCR 寻找 {self.level}')
                 elif state == 'select' and scene.page == 'home':
-                    if self.b.select_level():
+                    previous_direction = getattr(self.b, 'search_direction', -1)
+                    found = self.b.select_level(self.level)
+                    if getattr(self.b, 'search_direction', -1) != previous_direction:
+                        at_bottom = False
+                    if found:
                         state, since = 'selected', self.clock()
-                        self.message('OCR 识别到 3-10，已发送点击输入；等待右侧标题确认选中')
+                        self.message(f'OCR 识别到 {self.level}，已发送点击输入；等待右侧标题确认选中')
+                    elif getattr(self.b, 'search_direction', -1) == 0:
+                        paused_reason = f'{self.level} 应在当前可见列表内，但编号未能可靠识别；等待识别，不继续滚动'
+                        self.message(paused_reason + '；F8 停止')
                     elif not at_bottom:
                         self.publish('scrolling', scene)
                         at_bottom = self.action('scroll_step') is False
                     else:
-                        paused_reason = '两批滚动后列表未变化，无法确认是否到底或游戏未接收输入；暂停滚动，继续 OCR 等待 3-10'
+                        paused_reason = f'两批滚动后列表未变化，无法确认是否到达边界或游戏未接收输入；暂停滚动，继续 OCR 等待 {self.level}'
                         self.message(paused_reason + '；停止按钮 / F8 可停止')
                 elif state == 'selected' and scene.page == 'home' and scene.selected:
-                    self.message('右侧标题已确认选中 3-10')
+                    self.message(f'右侧标题已确认选中 {self.level}')
                     self.action('start')
                     state, since = 'starting', self.clock()
                     score_frames = 0
@@ -196,7 +256,7 @@ class Controller:
                     if state != 'playing':
                         self.message('已识别倒计时 / 营业画面，确认开始营业成功')
                     state, since = 'playing', self.clock()
-                    score_frames = score_frames + 1 if scene.score is not None and scene.score >= 1900 else 0
+                    score_frames = score_frames + 1 if scene.score is not None and self.goal is not None and scene.score >= self.goal else 0
                     if score_frames >= self.c['confirm_frames']:
                         self.action('exit')
                         state, since = 'exiting', self.clock()
@@ -284,7 +344,7 @@ class ScreenReader:
         template = self.templates[name]
         return float(self.cv.matchTemplate(gray, template, self.cv.TM_CCOEFF_NORMED).max()) >= threshold
 
-    def inspect(self, frame, *, read_selected=True):
+    def inspect(self, frame, *, read_selected=True, target_level='3-10'):
         frame = self.cv.resize(frame, REFERENCE)
         if self.matches(frame, 'success', (1050, 210, 470, 150)):
             return Scene('success', city=self.number(frame[35:95, 2110:2300], fraction), cost=self.number(frame[1173:1225, 1590:1660], integer))
@@ -292,17 +352,27 @@ class ScreenReader:
             return Scene('failure')
         if self.matches(frame, 'home_title', (10, 15, 380, 115)) and self.matches(frame, 'home_start', (2110, 1270, 400, 140)):
             title = self.text(frame[175:270, 495:1400]) if read_selected else ''
-            return Scene('home', city=self.number(frame[35:95, 2110:2300], fraction), selected=self.is_level(title))
-        if self.matches(frame, 'game_title', (2020, 20, 500, 120)) and self.matches(frame, 'hammer', (30, 520, 220, 180), 0.7):
+            return Scene('home', city=self.number(frame[35:95, 2110:2300], fraction), selected=self.is_level(title, target_level))
+        if self.matches(frame, 'hammer', (30, 520, 220, 180), 0.7) and self.game_title_matches(frame, target_level):
             page = 'ready' if self.matches(frame, 'ready', (1030, 260, 500, 220), 0.78) else 'playing'
-            return Scene(page, score=self.number(frame[125:185, 2275:2490], parse_score))
+            progress = self.number(frame[125:185, 2275:2490], score_progress)
+            if progress and target_level == '3-10' and progress[1] != 1900:
+                progress = None
+            return Scene(page, score=progress[0] if progress else None, goal=progress[1] if progress else None)
         return Scene('unknown')
 
+    def game_title_matches(self, frame, target_level):
+        if target_level == '3-10':
+            return self.matches(frame, 'game_title', (2020, 20, 500, 120))
+        # The old title template contains "3-10". Read other identifiers on
+        # each fresh frame: a cached whole heading could hide a changed number.
+        # This single-line crop uses fast recognition, with full OCR fallback.
+        return self.number(frame[20:120, 2020:2520],
+                           lambda text: True if self.is_level(text, target_level) else None) is True
+
     @staticmethod
-    def is_level(text):
-        normalized = unicodedata.normalize('NFKC', text)
-        normalized = re.sub(r'\s', '', normalized).replace('—', '-').replace('一', '-')
-        return bool(re.search(r'(?<!\d)3[-–]?10(?!\d)', normalized))
+    def is_level(text, target_level='3-10'):
+        return level_ids(text) == [target_level]
 
 
 class DesktopBackend:
@@ -333,6 +403,8 @@ class DesktopBackend:
         self.cursor_detector = CursorDetector()
         self.star_detector = StarAnchorDetector()
         self.scroll_stable = 0
+        self.search_direction = -1
+        self.last_search_level = None
 
     def frame(self):
         self.guard()
@@ -341,8 +413,8 @@ class DesktopBackend:
         image = self.capture_shield.capture(capture) if self.capture_shield else capture()
         return self.reader.cv.cvtColor(self.reader.np.array(image), self.reader.cv.COLOR_RGB2BGR)
 
-    def observe(self, *, read_selected=True):
-        return self.reader.inspect(self.frame(), read_selected=read_selected)
+    def observe(self, *, read_selected=True, target_level='3-10'):
+        return self.reader.inspect(self.frame(), read_selected=read_selected, target_level=target_level)
 
     def point(self, x, y):
         return self.window.area().point(x, y, REFERENCE)
@@ -417,6 +489,9 @@ class DesktopBackend:
         return self.move_verified(*anchor.center, '移动到三星锚点')
 
     def scroll_step(self):
+        direction = getattr(self, 'search_direction', -1)
+        if direction not in (-1, 1):
+            raise ValueError('目标编号可能已在可见列表内，暂停滚动等待可靠识别')
         cv = self.reader.cv
         frame = cv.resize(self.frame(), REFERENCE)
         anchor = self.star_detector.find(frame)
@@ -432,7 +507,7 @@ class DesktopBackend:
         # be mistaken for the level list continuing to scroll at the bottom.
         before = cv.resize(self.frame(), REFERENCE)
         self.guard()
-        self.mouse.scroll(-3)
+        self.mouse.scroll(direction * 3)
         if self.stop is not None:
             if self.stop.wait(self.scroll_interval):
                 raise Stopped('已停止（停止按钮 / F8）')
@@ -459,17 +534,31 @@ class DesktopBackend:
             self.guard()
             self.mouse.click()
 
-    def select_level(self):
+    def select_level(self, target_level='3-10'):
+        if target_level != getattr(self, 'last_search_level', None):
+            self.scroll_stable = 0
+            self.search_direction = -1
+            self.last_search_level = target_level
         frame = self.reader.cv.resize(self.frame(), REFERENCE)
         rows, _ = self.reader.ocr(frame[140:1390, :455])
-        for box, text, confidence in rows or []:
-            if confidence >= 0.65 and self.reader.is_level(text):
-                x = sum(p[0] for p in box) / 4
-                y = sum(p[1] for p in box) / 4 + 140
-                self.move_verified(x, y, '移动到 OCR 3-10 关卡')
-                self.guard()
-                self.mouse.click()
-                return True
+        matches = [(box, text) for box, text, confidence in rows or [] if confidence >= 0.65 and self.reader.is_level(text, target_level)]
+        if len(matches) > 1:
+            raise ValueError(f'OCR {target_level} 出现多个候选，暂停点击')
+        if matches:
+            box, _ = matches[0]
+            x = sum(p[0] for p in box) / 4
+            y = sum(p[1] for p in box) / 4 + 140
+            self.move_verified(x, y, f'移动到 OCR {target_level} 关卡')
+            self.guard()
+            self.mouse.click()
+            return True
+        visible = [tuple(map(int, identifier.split('-'))) for _, text, confidence in rows or [] if confidence >= 0.65 for identifier in level_ids(text)]
+        if visible:
+            target = tuple(map(int, target_level.split('-')))
+            direction = 1 if target < min(visible) else (-1 if target > max(visible) else 0)
+            if direction != self.search_direction:
+                self.scroll_stable = 0
+            self.search_direction = direction
         return False
 
     def guard(self, stop_only=False):

@@ -81,8 +81,8 @@ class Overlay:
             return None
         area = self.api.geometry(self.target)
         self.headline.configure(text=f'{area.width} × {area.height}   ·   {status.phase}')
-        self.metrics.configure(text=f'营业额 {status.score_text}   ·   完成 {status.completed} 轮   ·   失败 {status.failures}/3')
-        text = status.details if status.state in ('paused', 'error') else '异环助手正在监控当前游戏窗口'
+        self.metrics.configure(text=f'营业额 {status.score_text}   ·   完成 {status.completed} {status.progress_unit}   ·   失败 {status.failures}/3')
+        text = status.details if status.state in ('paused', 'error') else f'{status.mode_text} · 当前关卡 {status.level}'
         self.detail.configure(text=f'{text[:34]}   |   F8 停止')
         self.accent.configure(bg=status.color)
         if self.api.foreground(self.target):

@@ -62,6 +62,9 @@ def self_test(report):
         level = cv2.imread(str(workflow.ASSETS / 'level_sample.png'))
         if not reader.is_level(reader.text(level)):
             raise RuntimeError('真实截图 3-10 OCR 自检失败')
+        level = cv2.imread(str(workflow.ASSETS / 'level_first_sample.png'))
+        if level is None or not reader.is_level(reader.text(level), '1-1'):
+            raise RuntimeError('真实截图 1-1 OCR 自检失败')
         for name, expected, parser in (('score_zero', 0, engine.parse_score), ('score_goal', 1927, engine.parse_score), ('city_sample', 652, workflow.fraction), ('cost_sample', 48, workflow.integer)):
             image = cv2.imread(str(workflow.ASSETS / (name + '.png')))
             actual = reader.number(image, parser)
@@ -71,7 +74,24 @@ def self_test(report):
         root = tk.Tk()
         app = App(root)
         root.update()
+        if tuple(app.level_list['values']) != workflow.LEVELS:
+            raise RuntimeError('GUI 30 关下拉列表测试失败')
+        app.mode_choice.set(workflow.MODES['progression'])
+        app.start_level.set('2-7')
+        app.update_mode()
+        root.update()
+        if str(app.level_list['state']) != 'readonly' or '2-7' not in app.subtitle.get():
+            raise RuntimeError('GUI 闯关模式 / 开始关卡测试失败')
+        app.mode_choice.set(workflow.MODES['loop'])
+        app.update_mode()
+        if str(app.level_list['state']) != 'disabled':
+            raise RuntimeError('GUI 循环模式测试失败')
+        app.mode_choice.set(workflow.MODES['progression'])
+        app.update_mode()
         app.busy = True
+        app.update_mode()
+        if str(app.level_list['state']) != 'disabled':
+            raise RuntimeError('GUI 运行期间锁定开始关卡测试失败')
         app.stop_button.configure(state='normal')
         app.stop_button.invoke()
         if not app.stop.is_set() or app.runtime.phase != '正在停止':
@@ -79,7 +99,8 @@ def self_test(report):
         app.busy = False
         app.stop.clear()
         app.stop_button.configure(state='disabled')
-        app.runtime = RuntimeStatus()
+        app.runtime = RuntimeStatus(mode='progression', level='2-7', goal=None)
+        app.update_mode()
         app.paint_status()
         root.update()
         if sys.platform == 'win32':
@@ -155,7 +176,7 @@ def self_test(report):
             area = api.geometry(int(api.u.GetAncestor(root.winfo_id(), 2)))
             pyautogui.screenshot(region=area.region()).save(str(Path(report).with_suffix('.png')))
         app.close()
-        data = {'status': 'passed', 'score': 1900, 'gui': 'passed', 'star_anchors': 'passed', 'cursor_capture': 'passed', 'mouse_input': 'passed', 'stop_button': 'passed', 'overlay': 'passed', 'window_geometry': 'passed', 'frozen': bool(getattr(sys, 'frozen', False))}
+        data = {'status': 'passed', 'score': 1900, 'gui': 'passed', 'progression_controls': 'passed', 'level_ocr': 'passed', 'star_anchors': 'passed', 'cursor_capture': 'passed', 'mouse_input': 'passed', 'stop_button': 'passed', 'overlay': 'passed', 'window_geometry': 'passed', 'frozen': bool(getattr(sys, 'frozen', False))}
         code = 0
     except Exception as error:
         data, code = {'status': 'failed', 'error': str(error)}, 1
@@ -173,7 +194,7 @@ class App:
         self.busy = False
         self.runtime = RuntimeStatus()
         self.overlay = None
-        root.title('异环助手 · 店长特供 1.1.12')
+        root.title('异环助手 · 店长特供 1.1.13')
         root.geometry('980x820')
         root.minsize(920, 760)
         root.configure(bg='#0b1220')
@@ -208,7 +229,7 @@ class App:
         tk.Label(sidebar, text='NTE', bg='#101b31', fg='#42ddbc', font=('Segoe UI', 30, 'bold'), anchor='w').pack(fill='x')
         tk.Label(sidebar, text='异环助手', bg='#101b31', fg='#eef5ff', font=('Microsoft YaHei UI', 17, 'bold'), anchor='w').pack(fill='x', pady=(4, 30))
         ttk.Button(sidebar, text='店长特供', style='Accent.TButton', command=lambda: root.deiconify()).pack(fill='x', pady=5)
-        tk.Label(sidebar, text='当前游戏窗口\n自动读取尺寸\n\nv1.1.12', bg='#101b31', fg='#61738d', justify='left', font=('Segoe UI', 10), anchor='sw').pack(side='bottom', fill='x')
+        tk.Label(sidebar, text='当前游戏窗口\n自动读取尺寸\n\nv1.1.13', bg='#101b31', fg='#61738d', justify='left', font=('Segoe UI', 10), anchor='sw').pack(side='bottom', fill='x')
 
         outer = ttk.Frame(root, padding=(24, 22))
         outer.pack(fill='both', expand=True)
@@ -217,7 +238,8 @@ class App:
         ttk.Label(header, text='店长特供', style='Title.TLabel').pack(side='left')
         self.badge = ttk.Label(header, text='● 就绪', foreground='#42ddbc')
         self.badge.pack(side='right', pady=10)
-        ttk.Label(outer, text='钢琴家自动循环  /  从初始界面开始', style='Muted.TLabel').pack(anchor='w', pady=(6, 16))
+        self.subtitle = tk.StringVar(value='钢琴家自动循环  /  从初始界面开始')
+        ttk.Label(outer, textvariable=self.subtitle, style='Muted.TLabel').pack(anchor='w', pady=(6, 16))
 
         self.metric_size = tk.StringVar(value='未绑定')
         self.metric_phase = tk.StringVar(value='就绪')
@@ -246,14 +268,25 @@ class App:
 
         options = ttk.LabelFrame(outer, text='运行参数', padding=12)
         options.pack(fill='x', pady=(0, 10))
+        self.mode_choice = tk.StringVar(value=workflow.MODES['loop'])
+        self.start_level = tk.StringVar(value='1-1')
+        ttk.Label(options, text='运行模式').grid(row=0, column=0, padx=(0, 10), pady=3, sticky='w')
+        self.mode_list = ttk.Combobox(options, textvariable=self.mode_choice, values=list(workflow.MODES.values()), state='readonly', width=18)
+        self.mode_list.grid(row=0, column=1, padx=(0, 18), pady=3, sticky='w')
+        ttk.Label(options, text='请选择开始关卡：').grid(row=0, column=2, padx=(0, 10), pady=3, sticky='w')
+        self.level_list = ttk.Combobox(options, textvariable=self.start_level, values=workflow.LEVELS, state='disabled', width=10, height=12)
+        self.level_list.grid(row=0, column=3, padx=(0, 18), pady=3, sticky='w')
+        self.mode_list.bind('<<ComboboxSelected>>', lambda event: self.update_mode())
+        self.level_list.bind('<<ComboboxSelected>>', lambda event: self.update_mode())
         self.fields = {}
         for index, (name, label) in enumerate((('click_interval', '点击间隔 / 秒'), ('scan_interval', '识别间隔 / 秒'), ('scroll_interval', '滚动间隔 / 秒'))):
             row, column = divmod(index, 2)
+            row += 1
             ttk.Label(options, text=label).grid(row=row, column=column*2, padx=(0, 10), pady=3, sticky='w')
             variable = tk.StringVar()
             self.fields[name] = variable
             ttk.Entry(options, textvariable=variable, width=10).grid(row=row, column=column*2+1, padx=(0, 18), pady=3)
-        ttk.Label(options, text='默认 0.1；越小滚动越快，至少 0.05。', style='Muted.TLabel').grid(row=1, column=2, columnspan=2, sticky='w')
+        ttk.Label(options, text='默认 0.1；越小滚动越快，至少 0.05。', style='Muted.TLabel').grid(row=2, column=2, columnspan=2, sticky='w')
 
         actions = ttk.Frame(outer)
         actions.pack(fill='x', pady=(3, 8))
@@ -295,8 +328,17 @@ class App:
         self.badge.configure(text='● ' + self.runtime.phase, foreground=self.runtime.color)
         self.metric_phase.set(self.runtime.phase)
         self.metric_score.set(self.runtime.score_text)
-        self.metric_runs.set(f'{self.runtime.completed} 轮 · {self.runtime.failures}/3 失败')
+        self.metric_runs.set(f'{self.runtime.completed} {self.runtime.progress_unit} · {self.runtime.failures}/3 失败')
         self.status.set(self.runtime.details)
+        if self.busy:
+            self.subtitle.set(f'{self.runtime.mode_text}  /  当前关卡 {self.runtime.level}')
+
+    def update_mode(self):
+        progression = self.mode_choice.get() == workflow.MODES['progression']
+        self.level_list.configure(state='readonly' if progression and not self.busy else 'disabled')
+        if not self.busy:
+            self.subtitle.set(f'闯关模式  /  从 {self.start_level.get()} 依次闯关至 3-10' if progression else '钢琴家自动循环  /  从初始界面开始')
+        self.summary.set('成功领取并返回后进入下一关，完成 3-10 后停止；体力耗尽或连续失败三次也会停止。' if progression else '请在店长特供选关界面开始；体力耗尽或连续失败三次时自动停止。')
 
     def refresh_windows(self):
         try:
@@ -322,7 +364,9 @@ class App:
             c = workflow.settings(engine.load_config())
             for name, variable in self.fields.items():
                 variable.set(str(c[name]))
-            self.summary.set('请在店长特供选关界面开始；体力耗尽或连续失败三次时自动停止。')
+            self.mode_choice.set(workflow.MODES[c['mode']])
+            self.start_level.set(c['start_level'])
+            self.update_mode()
         except Exception as error:
             self.log(f'读取配置失败：{error}')
 
@@ -340,6 +384,8 @@ class App:
             c = workflow.settings(engine.load_config())
             for name, variable in self.fields.items():
                 c[name] = float(variable.get())
+            c['mode'] = next(key for key, label in workflow.MODES.items() if label == self.mode_choice.get())
+            c['start_level'] = workflow.normalize_level(self.start_level.get())
             selected = self.window_choices.get(self.window_choice.get())
             if not selected:
                 raise ValueError('请刷新并选择《异环》游戏窗口')
@@ -351,8 +397,10 @@ class App:
             return
         self.busy = True
         self.window_list.configure(state='disabled')
+        self.mode_list.configure(state='disabled')
+        self.level_list.configure(state='disabled')
         self.stop.clear()
-        self.runtime = RuntimeStatus(phase='准备运行' if mode == 'run' else ('鼠标诊断' if mode == 'diagnose' else '检查画面'), state='starting', details='5 秒后处理游戏窗口，请切回游戏')
+        self.runtime = RuntimeStatus(phase='准备运行' if mode == 'run' else ('鼠标诊断' if mode == 'diagnose' else '检查画面'), state='starting', details='5 秒后处理游戏窗口，请切回游戏', mode=c['mode'], level=c['start_level'] if c['mode'] == 'progression' else '3-10', goal=None if c['mode'] == 'progression' else 1900)
         self.paint_status()
         self.stop_button.configure(state='normal')
         if self.overlay:
@@ -404,11 +452,12 @@ class App:
             if self.stop.is_set():
                 raise engine.Stopped('已停止')
             if mode == 'check':
-                scene = desktop.observe()
-                emit(f'当前界面：{scene.page}；营业额：{scene.score}；都市体力：{scene.city}；领取消耗：{scene.cost}')
+                level = config['start_level'] if config['mode'] == 'progression' else '3-10'
+                scene = desktop.observe(target_level=level)
+                emit(f'当前界面：{scene.page}；目标关卡：{level}；营业额：{scene.score} / {scene.goal}；都市体力：{scene.city}；领取消耗：{scene.cost}')
                 emit('检查不会点击或改变窗口尺寸。使用当前内容区；开始运行必须是图一。')
             else:
-                emit(f'版本 1.1.12：滚动间隔 {config["scroll_interval"]} 秒；数字 OCR 快速识别与失败回退已启用。')
+                emit(f'版本 1.1.13：{workflow.MODES[config["mode"]]}；开始关卡 {config["start_level"] if config["mode"] == "progression" else "3-10"}；滚动间隔 {config["scroll_interval"]} 秒。')
                 workflow.Controller(config, desktop, self.stop, log=emit, report=lambda data: self.events.put(('runtime', data))).run()
         except engine.Stopped as error:
             emit(str(error))
@@ -439,6 +488,8 @@ class App:
                     if self.overlay:
                         self.overlay.hide()
                     self.window_list.configure(state='readonly')
+                    self.mode_list.configure(state='readonly')
+                    self.update_mode()
                     for button in (self.check_button, self.diagnose_button, self.start_button, self.window_refresh):
                         button.configure(state='normal')
                     self.root.deiconify()

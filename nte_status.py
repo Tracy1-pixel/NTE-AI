@@ -17,9 +17,12 @@ class RuntimeStatus:
     score: int | None = None
     completed: int = 0
     failures: int = 0
+    mode: str = 'loop'
+    level: str = '3-10'
+    goal: int | None = 1900
 
     def apply(self, data):
-        for name in ('phase', 'state', 'details', 'score', 'completed', 'failures'):
+        for name in ('phase', 'state', 'details', 'score', 'completed', 'failures', 'mode', 'level', 'goal'):
             if name in data:
                 setattr(self, name, data[name])
 
@@ -30,7 +33,17 @@ class RuntimeStatus:
 
     @property
     def score_text(self):
-        return '— / 1,900' if self.score is None else f'{self.score:,} / 1,900'
+        score = '—' if self.score is None else f'{self.score:,}'
+        goal = '—' if self.goal is None else f'{self.goal:,}'
+        return f'{score} / {goal}'
+
+    @property
+    def mode_text(self):
+        return '闯关模式' if self.mode == 'progression' else '钢琴家循环'
+
+    @property
+    def progress_unit(self):
+        return '关' if self.mode == 'progression' else '轮'
 
 
 def overlay_position(area, width=430, height=112, margin=16):
