@@ -393,6 +393,10 @@ def main():
     parser = argparse.ArgumentParser(description='异环店长特供七图流程')
     parser.add_argument('command', choices=('configure', 'check', 'run'), nargs='?', default='configure')
     args = parser.parse_args()
+    if args.command != 'check':
+        from nte_privileges import ensure_administrator
+        if not ensure_administrator():
+            return
     from app import App, enable_dpi_awareness
     enable_dpi_awareness()
     if args.command == 'configure':

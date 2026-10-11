@@ -1,12 +1,14 @@
-param([string]$Version = "1.1.10")
+param([string]$Version = "1.1.11")
 $ErrorActionPreference = "Stop"
 Set-Location (Split-Path $PSScriptRoot -Parent)
-python -m PyInstaller --noconfirm --clean --windowed --onedir --name NTE-AI --add-data "assets;assets" --collect-all rapidocr_onnxruntime --collect-all onnxruntime --collect-all pyautogui --collect-all pynput app.py 2>&1 | Tee-Object -FilePath pyinstaller-build.log
+python -m PyInstaller --noconfirm --clean --windowed --uac-admin --onedir --name NTE-AI --add-data "assets;assets" --collect-all rapidocr_onnxruntime --collect-all onnxruntime --collect-all pyautogui --collect-all pynput app.py 2>&1 | Tee-Object -FilePath pyinstaller-build.log
 if ($LASTEXITCODE -ne 0) {
     $detail = (Get-Content pyinstaller-build.log -Tail 12) -join " | "
     Write-Output "::error::PyInstaller failed: $detail"
     throw "PyInstaller failed"
 }
+python packaging/check_admin_manifest.py ".\dist\NTE-AI\NTE-AI.exe"
+if ($LASTEXITCODE -ne 0) { throw "Bundled administrator manifest verification failed" }
 $process = Start-Process -FilePath ".\dist\NTE-AI\NTE-AI.exe" -ArgumentList @("--self-test", "bundled-test.json") -Wait -PassThru
 if ($process.ExitCode -ne 0) {
     if (Test-Path bundled-test.json) { Write-Output "::error::Bundled smoke test: $(Get-Content bundled-test.json -Raw)" }
@@ -29,6 +31,8 @@ $process = Start-Process -FilePath $installer -ArgumentList "/VERYSILENT /SUPPRE
 if ($process.ExitCode -ne 0) { throw "Installer smoke test failed" }
 $shortcut = Join-Path ([Environment]::GetFolderPath("Desktop")) "异环助手.lnk"
 if (!(Test-Path $shortcut)) { throw "Desktop shortcut was not created" }
+python packaging/check_admin_manifest.py (Join-Path $installDir "NTE-AI.exe")
+if ($LASTEXITCODE -ne 0) { throw "Installed administrator manifest verification failed" }
 $process = Start-Process -FilePath (Join-Path $installDir "NTE-AI.exe") -ArgumentList @("--self-test", "installed-test.json") -Wait -PassThru
 if ($process.ExitCode -ne 0) {
     if (Test-Path installed-test.json) { Write-Output "::error::Installed smoke test: $(Get-Content installed-test.json -Raw)" }

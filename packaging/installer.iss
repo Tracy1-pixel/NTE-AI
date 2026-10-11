@@ -1,5 +1,5 @@
 #ifndef AppVersion
-  #define AppVersion "1.1.10"
+  #define AppVersion "1.1.11"
 #endif
 [Setup]
 AppId={{D3F59318-2A4F-4C1A-900E-B83A85105E36}
@@ -30,4 +30,4 @@ Name: "{autodesktop}\异环助手"; Filename: "{app}\NTE-AI.exe"; WorkingDir: "{
 Name: "{group}\异环助手"; Filename: "{app}\NTE-AI.exe"; WorkingDir: "{app}"
 
 [Run]
-Filename: "{app}\NTE-AI.exe"; Description: "打开异环助手"; Flags: nowait postinstall skipifsilent
+Filename: "{app}\NTE-AI.exe"; Description: "打开异环助手"; Flags: nowait postinstall skipifsilent shellexec

@@ -34,6 +34,10 @@ def self_test(report):
         from rapidocr_onnxruntime import RapidOCR
         if sys.platform == 'win32':
             from pynput import keyboard
+            import os
+            from nte_input import process_elevated
+            if process_elevated(os.getpid()) != '是':
+                raise RuntimeError('助手实际进程未以管理员身份运行')
             import ctypes as ct
             from ctypes import wintypes as wt
             from nte_cursor import windows_cursor_bitmap
@@ -169,7 +173,7 @@ class App:
         self.busy = False
         self.runtime = RuntimeStatus()
         self.overlay = None
-        root.title('异环助手 · 店长特供 1.1.10')
+        root.title('异环助手 · 店长特供 1.1.11')
         root.geometry('980x820')
         root.minsize(920, 760)
         root.configure(bg='#0b1220')
@@ -204,7 +208,7 @@ class App:
         tk.Label(sidebar, text='NTE', bg='#101b31', fg='#42ddbc', font=('Segoe UI', 30, 'bold'), anchor='w').pack(fill='x')
         tk.Label(sidebar, text='异环助手', bg='#101b31', fg='#eef5ff', font=('Microsoft YaHei UI', 17, 'bold'), anchor='w').pack(fill='x', pady=(4, 30))
         ttk.Button(sidebar, text='控制台', style='Accent.TButton', command=lambda: root.deiconify()).pack(fill='x', pady=5)
-        tk.Label(sidebar, text='当前游戏窗口\n自动读取尺寸\n\nv1.1.10', bg='#101b31', fg='#61738d', justify='left', font=('Segoe UI', 10), anchor='sw').pack(side='bottom', fill='x')
+        tk.Label(sidebar, text='当前游戏窗口\n自动读取尺寸\n\nv1.1.11', bg='#101b31', fg='#61738d', justify='left', font=('Segoe UI', 10), anchor='sw').pack(side='bottom', fill='x')
 
         outer = ttk.Frame(root, padding=(24, 22))
         outer.pack(fill='both', expand=True)
@@ -404,7 +408,7 @@ class App:
                 emit(f'当前界面：{scene.page}；营业额：{scene.score}；都市体力：{scene.city}；领取消耗：{scene.cost}')
                 emit('检查不会点击或改变窗口尺寸。使用当前内容区；开始运行必须是图一。')
             else:
-                emit(f'版本 1.1.10：滚动间隔 {config["scroll_interval"]} 秒；数字 OCR 快速识别与失败回退已启用。')
+                emit(f'版本 1.1.11：滚动间隔 {config["scroll_interval"]} 秒；数字 OCR 快速识别与失败回退已启用。')
                 workflow.Controller(config, desktop, self.stop, log=emit, report=lambda data: self.events.put(('runtime', data))).run()
         except engine.Stopped as error:
             emit(str(error))
@@ -461,6 +465,9 @@ class App:
 
 
 def main():
+    from nte_privileges import ensure_administrator
+    if not ensure_administrator():
+        return 0
     enable_dpi_awareness()
     parser = argparse.ArgumentParser()
     parser.add_argument('--self-test', metavar='REPORT')
