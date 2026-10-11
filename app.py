@@ -76,6 +76,19 @@ def self_test(report):
         root.update()
         if tuple(app.level_list['values']) != workflow.LEVELS:
             raise RuntimeError('GUI 30 关下拉列表测试失败')
+        app.feature_buttons['auction'].invoke()
+        root.update()
+        if app.feature != 'auction' or app.heading.get() != '即刻落槌' or app.mode_list.winfo_ismapped() or app.metric_score.get() != '至尊仪器组':
+            raise RuntimeError('GUI 即刻落槌栏目切换测试失败')
+        app.busy = True
+        app.feature_buttons['pianist'].invoke()
+        if app.feature != 'auction':
+            raise RuntimeError('运行中不应切换功能栏目')
+        app.busy = False
+        app.feature_buttons['pianist'].invoke()
+        root.update()
+        if app.feature != 'pianist' or not app.mode_list.winfo_ismapped():
+            raise RuntimeError('GUI 店长特供恢复测试失败')
         app.mode_choice.set(workflow.MODES['progression'])
         app.start_level.set('2-7')
         app.update_mode()
@@ -229,12 +242,13 @@ def self_test(report):
             app.paint_status()
             probe.destroy()
             # Save a preview of the actual packaged GUI for the build artifacts.
+            app.select_feature('auction')
             root.deiconify()
             root.update()
             area = api.geometry(int(api.u.GetAncestor(root.winfo_id(), 2)))
             pyautogui.screenshot(region=area.region()).save(str(Path(report).with_suffix('.png')))
         app.close()
-        data = {'status': 'passed', 'score': 1900, 'gui': 'passed', 'f8_global': 'passed', 'f8_polling': 'passed', 'f8_gui_restore': 'passed', 'progression_controls': 'passed', 'level_ocr': 'passed', 'star_anchors': 'passed', 'cursor_capture': 'passed', 'mouse_input': 'passed', 'stop_button': 'passed', 'overlay': 'passed', 'window_geometry': 'passed', 'frozen': bool(getattr(sys, 'frozen', False))}
+        data = {'status': 'passed', 'score': 1900, 'gui': 'passed', 'auction_controls': 'passed', 'f8_global': 'passed', 'f8_polling': 'passed', 'f8_gui_restore': 'passed', 'progression_controls': 'passed', 'level_ocr': 'passed', 'star_anchors': 'passed', 'cursor_capture': 'passed', 'mouse_input': 'passed', 'stop_button': 'passed', 'overlay': 'passed', 'window_geometry': 'passed', 'frozen': bool(getattr(sys, 'frozen', False))}
         code = 0
     except Exception as error:
         data, code = {'status': 'failed', 'error': str(error)}, 1
@@ -250,9 +264,10 @@ class App:
         self.events = queue.Queue()
         self.stop = threading.Event()
         self.busy = False
+        self.feature = 'pianist'
         self.runtime = RuntimeStatus()
         self.overlay = None
-        root.title('异环助手 · 店长特供 1.1.15')
+        root.title('异环助手 · 店长特供 1.1.16')
         root.geometry('980x820')
         root.minsize(920, 760)
         root.configure(bg='#0b1220')
@@ -287,14 +302,19 @@ class App:
         sidebar.pack_propagate(False)
         tk.Label(sidebar, text='NTE', bg='#101b31', fg='#42ddbc', font=('Segoe UI', 30, 'bold'), anchor='w').pack(fill='x')
         tk.Label(sidebar, text='异环助手', bg='#101b31', fg='#eef5ff', font=('Microsoft YaHei UI', 17, 'bold'), anchor='w').pack(fill='x', pady=(4, 30))
-        ttk.Button(sidebar, text='店长特供', style='Accent.TButton', command=lambda: root.deiconify()).pack(fill='x', pady=5)
-        tk.Label(sidebar, text='当前游戏窗口\n自动读取尺寸\n\nv1.1.15', bg='#101b31', fg='#61738d', justify='left', font=('Segoe UI', 10), anchor='sw').pack(side='bottom', fill='x')
+        self.feature_buttons = {}
+        for key, label in (('pianist', '店长特供'), ('auction', '即刻落槌')):
+            button = ttk.Button(sidebar, text=label, style='Accent.TButton' if key == 'pianist' else 'TButton', command=lambda feature=key: self.select_feature(feature))
+            button.pack(fill='x', pady=5)
+            self.feature_buttons[key] = button
+        tk.Label(sidebar, text='当前游戏窗口\n自动读取尺寸\n\nv1.1.16', bg='#101b31', fg='#61738d', justify='left', font=('Segoe UI', 10), anchor='sw').pack(side='bottom', fill='x')
 
         outer = ttk.Frame(root, padding=(24, 22))
         outer.pack(fill='both', expand=True)
         header = ttk.Frame(outer)
         header.pack(fill='x')
-        ttk.Label(header, text='店长特供', style='Title.TLabel').pack(side='left')
+        self.heading = tk.StringVar(value='店长特供')
+        ttk.Label(header, textvariable=self.heading, style='Title.TLabel').pack(side='left')
         self.badge = ttk.Label(header, text='● 就绪', foreground='#42ddbc')
         self.badge.pack(side='right', pady=10)
         self.subtitle = tk.StringVar(value='钢琴家自动循环  /  从初始界面开始')
@@ -304,13 +324,15 @@ class App:
         self.metric_phase = tk.StringVar(value='就绪')
         self.metric_score = tk.StringVar(value='— / 1,900')
         self.metric_runs = tk.StringVar(value='0 轮 · 0/3 失败')
+        self.score_caption = tk.StringVar(value='营业额')
+        self.progress_caption = tk.StringVar(value='本次进度')
         metrics = ttk.Frame(outer)
         metrics.pack(fill='x', pady=(0, 14))
-        for column, (title, value) in enumerate((('游戏内容区', self.metric_size), ('运行阶段', self.metric_phase), ('营业额', self.metric_score), ('本次进度', self.metric_runs))):
+        for column, (title, value) in enumerate((('游戏内容区', self.metric_size), ('运行阶段', self.metric_phase), (self.score_caption, self.metric_score), (self.progress_caption, self.metric_runs))):
             metrics.columnconfigure(column, weight=1)
             card = ttk.Frame(metrics, style='Card.TFrame', padding=(10, 12))
             card.grid(row=0, column=column, sticky='nsew', padx=(0, 6 if column < 3 else 0))
-            ttk.Label(card, text=title, style='Card.TLabel').pack(anchor='w')
+            ttk.Label(card, **({'text': title} if isinstance(title, str) else {'textvariable': title}), style='Card.TLabel').pack(anchor='w')
             ttk.Label(card, textvariable=value, style='Value.TLabel').pack(anchor='w', pady=(7, 0))
 
         target = ttk.LabelFrame(outer, text='绑定游戏窗口', padding=12)
@@ -335,6 +357,7 @@ class App:
         ttk.Label(options, text='请选择开始关卡：').grid(row=0, column=2, padx=(0, 10), pady=3, sticky='w')
         self.level_list = ttk.Combobox(options, textvariable=self.start_level, values=workflow.LEVELS, state='disabled', width=10, height=12)
         self.level_list.grid(row=0, column=3, padx=(0, 18), pady=3, sticky='w')
+        self.mode_widgets = list(options.grid_slaves(row=0))
         self.mode_list.bind('<<ComboboxSelected>>', lambda event: self.update_mode())
         self.level_list.bind('<<ComboboxSelected>>', lambda event: self.update_mode())
         self.fields = {}
@@ -386,13 +409,43 @@ class App:
     def paint_status(self):
         self.badge.configure(text='● ' + self.runtime.phase, foreground=self.runtime.color)
         self.metric_phase.set(self.runtime.phase)
-        self.metric_score.set(self.runtime.score_text)
-        self.metric_runs.set(f'{self.runtime.completed} {self.runtime.progress_unit} · {self.runtime.failures}/3 失败')
+        auction = self.runtime.mode == 'auction'
+        self.score_caption.set('目标仪器组' if auction else '营业额')
+        self.progress_caption.set('准备进度' if auction else '本次进度')
+        self.metric_score.set('至尊仪器组' if auction else self.runtime.score_text)
+        self.metric_runs.set(('等待后续流程' if self.runtime.completed else '准备中') if auction else f'{self.runtime.completed} {self.runtime.progress_unit} · {self.runtime.failures}/3 失败')
         self.status.set(self.runtime.details)
         if self.busy:
-            self.subtitle.set(f'{self.runtime.mode_text}  /  当前关卡 {self.runtime.level}')
+            self.subtitle.set('至尊仪器组准备  /  当前阶段 ' + self.runtime.phase if auction else f'{self.runtime.mode_text}  /  当前关卡 {self.runtime.level}')
+
+    def select_feature(self, feature):
+        if self.busy or feature not in self.feature_buttons:
+            return
+        self.feature = feature
+        label = '即刻落槌' if feature == 'auction' else '店长特供'
+        self.heading.set(label)
+        self.root.title(f'异环助手 · {label} 1.1.16')
+        for key, button in self.feature_buttons.items():
+            button.configure(style='Accent.TButton' if key == feature else 'TButton')
+        self.update_mode()
+        auction = feature == 'auction'
+        mode = 'auction' if auction else ('progression' if self.mode_choice.get() == workflow.MODES['progression'] else 'loop')
+        self.runtime = RuntimeStatus(mode=mode, level='至尊仪器组' if auction else (self.start_level.get() if mode == 'progression' else '3-10'), goal=None if mode != 'loop' else 1900, details='请从即刻落槌初始界面开始' if auction else '请选择游戏窗口，从店长特供初始界面开始')
+        self.paint_status()
 
     def update_mode(self):
+        if self.feature == 'auction':
+            for widget in self.mode_widgets:
+                widget.grid_remove()
+            self.mode_list.configure(state='disabled')
+            self.level_list.configure(state='disabled')
+            if not self.busy:
+                self.subtitle.set('至尊仪器组准备  /  从初始界面开始')
+            self.summary.set('选择并使用至尊仪器组 → 返回后开始拍卖 → 确认入场 → 等待加载；后续游戏操作待补充。')
+            return
+        for widget in self.mode_widgets:
+            widget.grid()
+        self.mode_list.configure(state='disabled' if self.busy else 'readonly')
         progression = self.mode_choice.get() == workflow.MODES['progression']
         self.level_list.configure(state='readonly' if progression and not self.busy else 'disabled')
         if not self.busy:
@@ -420,12 +473,13 @@ class App:
 
     def refresh(self):
         try:
-            c = workflow.settings(engine.load_config())
+            saved = engine.load_config()
+            c = workflow.settings(saved)
             for name, variable in self.fields.items():
                 variable.set(str(c[name]))
             self.mode_choice.set(workflow.MODES[c['mode']])
             self.start_level.set(c['start_level'])
-            self.update_mode()
+            self.select_feature(saved.get('feature', 'pianist'))
         except Exception as error:
             self.log(f'读取配置失败：{error}')
 
@@ -450,6 +504,7 @@ class App:
                 raise ValueError('请刷新并选择《异环》游戏窗口')
             handle, c['window_title'] = selected
             workflow.settings(c)
+            c['feature'] = self.feature
             engine.save_config(c)
         except Exception as error:
             messagebox.showerror('请完成配置', str(error), parent=self.root)
@@ -459,12 +514,13 @@ class App:
         self.mode_list.configure(state='disabled')
         self.level_list.configure(state='disabled')
         self.stop.clear()
-        self.runtime = RuntimeStatus(phase='准备运行' if mode == 'run' else ('鼠标诊断' if mode == 'diagnose' else '检查画面'), state='starting', details='5 秒后处理游戏窗口，请切回游戏', mode=c['mode'], level=c['start_level'] if c['mode'] == 'progression' else '3-10', goal=None if c['mode'] == 'progression' else 1900)
+        auction = self.feature == 'auction'
+        self.runtime = RuntimeStatus(phase='准备运行' if mode == 'run' else ('鼠标诊断' if mode == 'diagnose' else '检查画面'), state='starting', details='5 秒后处理游戏窗口，请切回游戏', mode='auction' if auction else c['mode'], level='至尊仪器组' if auction else (c['start_level'] if c['mode'] == 'progression' else '3-10'), goal=None if auction or c['mode'] == 'progression' else 1900)
         self.paint_status()
         self.stop_button.configure(state='normal')
         if self.overlay:
             self.overlay.attach(handle)
-        for button in (self.check_button, self.diagnose_button, self.start_button, self.window_refresh):
+        for button in (self.check_button, self.diagnose_button, self.start_button, self.window_refresh, *self.feature_buttons.values()):
             button.configure(state='disabled')
         self.log('窗口最小化，5 秒后处理游戏画面，请切回游戏。')
         self.root.iconify()
@@ -504,17 +560,29 @@ class App:
                         emit(f'光标图形诊断未完成：{error}；上方坐标 / 权限诊断仍可使用。')
                 self.events.put(('runtime', {'phase': '诊断完成', 'state': 'stopped', 'details': '鼠标诊断完成，请复制运行记录中的诊断信息'}))
                 return
-            desktop = workflow.DesktopBackend(self.stop, config['window_title'], handle, prepare=(mode == 'run'), capture_shield=self.overlay.shield if self.overlay else None, log=emit, scroll_interval=config['scroll_interval'])
+            auction = config.get('feature') == 'auction'
+            if auction:
+                from nte_auction import AuctionBackend, AuctionController
+            backend = AuctionBackend if auction else workflow.DesktopBackend
+            desktop = backend(self.stop, config['window_title'], handle, prepare=(mode == 'run'), capture_shield=self.overlay.shield if self.overlay else None, log=emit, scroll_interval=config['scroll_interval'])
             if self.stop.is_set():
                 raise engine.Stopped('已停止')
             if mode == 'check':
-                level = config['start_level'] if config['mode'] == 'progression' else '3-10'
-                scene = desktop.observe(target_level=level)
-                emit(f'当前界面：{scene.page}；目标关卡：{level}；营业额：{scene.score} / {scene.goal}；都市体力：{scene.city}；领取消耗：{scene.cost}')
-                emit('检查不会点击或改变窗口尺寸。使用当前内容区；开始运行必须是图一。')
+                if auction:
+                    scene = desktop.observe()
+                    emit(f'即刻落槌界面：{scene.page}；至尊仪器组可见={scene.target is not None}；已选中={scene.selected}；底部按钮={scene.use_label or "未识别"}')
+                else:
+                    level = config['start_level'] if config['mode'] == 'progression' else '3-10'
+                    scene = desktop.observe(target_level=level)
+                    emit(f'当前界面：{scene.page}；目标关卡：{level}；营业额：{scene.score} / {scene.goal}；都市体力：{scene.city}；领取消耗：{scene.cost}')
+                emit('检查不会点击或改变窗口尺寸。开始运行必须是所选栏目对应的初始界面。')
             else:
-                emit(f'版本 1.1.15：{workflow.MODES[config["mode"]]}；开始关卡 {config["start_level"] if config["mode"] == "progression" else "3-10"}；滚动间隔 {config["scroll_interval"]} 秒。')
-                workflow.Controller(config, desktop, self.stop, log=emit, report=lambda data: self.events.put(('runtime', data))).run()
+                if auction:
+                    emit('版本 1.1.16：即刻落槌；选择并使用至尊仪器组，返回后开始拍卖、确认入场并等待加载；后续游戏操作待补充。')
+                else:
+                    emit(f'版本 1.1.16：{workflow.MODES[config["mode"]]}；开始关卡 {config["start_level"] if config["mode"] == "progression" else "3-10"}；滚动间隔 {config["scroll_interval"]} 秒。')
+                controller = AuctionController if auction else workflow.Controller
+                controller(config, desktop, self.stop, log=emit, report=lambda data: self.events.put(('runtime', data))).run()
         except engine.Stopped as error:
             reason = monitor.reason.replace('正在停止自动操作', '自动操作已停止') if monitor and monitor.reason else str(error)
             emit(reason)
@@ -556,7 +624,7 @@ class App:
                     self.window_list.configure(state='readonly')
                     self.mode_list.configure(state='readonly')
                     self.update_mode()
-                    for button in (self.check_button, self.diagnose_button, self.start_button, self.window_refresh):
+                    for button in (self.check_button, self.diagnose_button, self.start_button, self.window_refresh, *self.feature_buttons.values()):
                         button.configure(state='normal')
                     self.root.deiconify()
         except queue.Empty:

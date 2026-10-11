@@ -39,10 +39,14 @@ class RuntimeStatus:
 
     @property
     def mode_text(self):
+        if self.mode == 'auction':
+            return '即刻落槌'
         return '闯关模式' if self.mode == 'progression' else '钢琴家循环'
 
     @property
     def progress_unit(self):
+        if self.mode == 'auction':
+            return '次'
         return '关' if self.mode == 'progression' else '轮'
 
 

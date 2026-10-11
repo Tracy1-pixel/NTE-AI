@@ -409,10 +409,15 @@ def main():
         root.mainloop()
         return
     import nte_workflow as workflow
+    saved = load_config()
+    auction = saved.get('feature') == 'auction'
+    if auction:
+        from nte_auction import AuctionBackend, AuctionController
+    backend = AuctionBackend if auction else workflow.DesktopBackend
     if args.command == 'check':
         print('5 秒后检查，请切回游戏；沿用当前窗口尺寸和位置。')
         time.sleep(5)
-        print(workflow.DesktopBackend(title=load_config().get('window_title', ''), prepare=False).observe())
+        print(backend(title=saved.get('window_title', ''), prepare=False).observe())
         return
     from nte_hotkey import F8StopMonitor
     stop = threading.Event()
@@ -420,10 +425,11 @@ def main():
         print('5 秒后开始，请打开图一。F8 停止。')
         if stop.wait(5):
             return
-        config = workflow.settings(load_config())
-        desktop = workflow.DesktopBackend(stop, title=config['window_title'], scroll_interval=config['scroll_interval'])
+        config = workflow.settings(saved)
+        desktop = backend(stop, title=config['window_title'], scroll_interval=config['scroll_interval'])
         try:
-            workflow.Controller(config, desktop, stop).run()
+            controller = AuctionController if auction else workflow.Controller
+            controller(config, desktop, stop).run()
         except Stopped as error:
             print(error)
 
