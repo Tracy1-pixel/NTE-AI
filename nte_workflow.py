@@ -18,14 +18,16 @@ ASSETS = Path(getattr(sys, '_MEIPASS', Path(__file__).resolve().parent)) / 'asse
 
 
 def settings(saved=None):
-    c = {'click_interval': 0.08, 'scan_interval': 0.25, 'confirm_frames': 3,
+    c = {'click_interval': 0.08, 'scan_interval': 0.25, 'scroll_interval': 0.1, 'confirm_frames': 3,
          'transition_timeout': 30.0, 'workflow_version': 5, 'window_title': ''}
     for key in c:
         if key != 'workflow_version' and key in (saved or {}):
             c[key] = saved[key]
-    for key in ('click_interval', 'scan_interval', 'transition_timeout'):
+    for key in ('click_interval', 'scan_interval', 'scroll_interval', 'transition_timeout'):
         if not math.isfinite(c[key]) or c[key] <= 0:
             raise ValueError(f'{key} 必须是大于零的有限数值')
+    if c['scroll_interval'] < 0.05:
+        raise ValueError('滚动间隔至少为 0.05 秒，需留出画面更新时间')
     if not isinstance(c['confirm_frames'], int) or c['confirm_frames'] < 2:
         raise ValueError('连续确认帧数至少为 2')
     if not isinstance(c['window_title'], str):
@@ -96,7 +98,7 @@ class Controller:
     def action(self, name):
         self.check()
         result = self.b.action(name)
-        if name != 'hammer':
+        if name not in ('hammer', 'scroll_step'):
             self.wait(0.3)
         return result
 
@@ -105,7 +107,7 @@ class Controller:
         # Require several fresh observations of Figure 1 before any mouse action.
         for _ in range(self.c['confirm_frames']):
             self.check()
-            if self.b.observe().page != 'home':
+            if self.b.observe(read_selected=False).page != 'home':
                 raise Stopped('界面错误：请停留在图一的店长特供关卡选择页面再开始')
             self.wait(self.c['scan_interval'])
 
@@ -124,11 +126,11 @@ class Controller:
                         self.action('hammer')
                     self.wait(self.c['click_interval'])
                     continue
-                scene = self.b.observe()
+                scene = self.b.observe(read_selected=(state == 'selected'))
                 if state == 'cursor' and scene.page != 'home':
                     cursor_frames = 0
                 self.publish(state, scene)
-                next_observe = self.clock() + self.c['scan_interval']
+                next_observe = self.clock() + self.c['scroll_interval' if state == 'select' else 'scan_interval']
                 for page in ('home', 'success', 'failure'):
                     page_frames[page] = page_frames.get(page, 0) + 1 if scene.page == page else 0
                 # Count the final claimed round before its zero-stamina stop.
@@ -233,7 +235,15 @@ class Controller:
             except Exception as error:
                 self.message(f'运行错误，暂停本次操作并等待恢复：{error}；F8 停止')
                 self.publish(state, reason=str(error))
-            self.wait(self.c['click_interval'] if state == 'playing' else self.c['scan_interval'])
+                # Failed capture/input still needs a pause. A previous wheel
+                # deadline may already have elapsed when foreground is lost.
+                next_observe = self.clock() + self.c['scan_interval']
+            if state == 'select':
+                # The wheel already waits for the list to update. Do not add
+                # another fixed delay after capture/OCR have used this interval.
+                self.wait(max(0, next_observe - self.clock()))
+            else:
+                self.wait(self.c['click_interval'] if state == 'playing' else self.c['scan_interval'])
 
 
 class ScreenReader:
@@ -256,24 +266,36 @@ class ScreenReader:
         rows, _ = self.ocr(enlarged)
         return ''.join(row[1] for row in sorted(rows or [], key=lambda r: min(p[0] for p in r[0])) if row[2] >= 0.65)
 
+    def number(self, image, parser):
+        # These fixed ROIs contain a single horizontal number/fraction. RapidOCR
+        # can recognize the crop directly without finding text boxes first.
+        rows, _ = self.ocr(image, use_det=False, use_cls=False)
+        if rows and len(rows) == 1 and rows[0][1] >= 0.65:
+            value = parser(rows[0][0])
+            if value is not None:
+                return value
+        # Low confidence or invalid format is not zero; retain the full pipeline
+        # as a fallback for imperfect crops. Every observation uses a fresh image.
+        return parser(self.text(image))
+
     def matches(self, frame, name, box, threshold=0.82):
         x, y, w, h = box
         gray = self.cv.cvtColor(frame[y:y+h, x:x+w], self.cv.COLOR_BGR2GRAY)
         template = self.templates[name]
         return float(self.cv.matchTemplate(gray, template, self.cv.TM_CCOEFF_NORMED).max()) >= threshold
 
-    def inspect(self, frame):
+    def inspect(self, frame, *, read_selected=True):
         frame = self.cv.resize(frame, REFERENCE)
         if self.matches(frame, 'success', (1050, 210, 470, 150)):
-            return Scene('success', city=fraction(self.text(frame[35:95, 2110:2300])), cost=integer(self.text(frame[1173:1225, 1590:1660])))
+            return Scene('success', city=self.number(frame[35:95, 2110:2300], fraction), cost=self.number(frame[1173:1225, 1590:1660], integer))
         if self.matches(frame, 'failure', (1050, 210, 470, 150)):
             return Scene('failure')
         if self.matches(frame, 'home_title', (10, 15, 380, 115)) and self.matches(frame, 'home_start', (2110, 1270, 400, 140)):
-            title = self.text(frame[175:270, 495:1400])
-            return Scene('home', city=fraction(self.text(frame[35:95, 2110:2300])), selected=self.is_level(title))
+            title = self.text(frame[175:270, 495:1400]) if read_selected else ''
+            return Scene('home', city=self.number(frame[35:95, 2110:2300], fraction), selected=self.is_level(title))
         if self.matches(frame, 'game_title', (2020, 20, 500, 120)) and self.matches(frame, 'hammer', (30, 520, 220, 180), 0.7):
             page = 'ready' if self.matches(frame, 'ready', (1030, 260, 500, 220), 0.78) else 'playing'
-            return Scene(page, score=parse_score(self.text(frame[125:185, 2275:2490])))
+            return Scene(page, score=self.number(frame[125:185, 2275:2490], parse_score))
         return Scene('unknown')
 
     @staticmethod
@@ -284,7 +306,8 @@ class ScreenReader:
 
 
 class DesktopBackend:
-    def __init__(self, stop=None, title='', hwnd=None, prepare=True, capture_shield=None, log=print):
+    def __init__(self, stop=None, title='', hwnd=None, prepare=True, capture_shield=None, log=print, scroll_interval=0.1):
+        self.scroll_interval = settings({'scroll_interval': scroll_interval})['scroll_interval']
         import pyautogui as pg
         self.pg = pg
         self.stop = stop
@@ -318,8 +341,8 @@ class DesktopBackend:
         image = self.capture_shield.capture(capture) if self.capture_shield else capture()
         return self.reader.cv.cvtColor(self.reader.np.array(image), self.reader.cv.COLOR_RGB2BGR)
 
-    def observe(self):
-        return self.reader.inspect(self.frame())
+    def observe(self, *, read_selected=True):
+        return self.reader.inspect(self.frame(), read_selected=read_selected)
 
     def point(self, x, y):
         return self.window.area().point(x, y, REFERENCE)
@@ -401,20 +424,20 @@ class DesktopBackend:
             raise ValueError('左侧未识别到连续三颗星的完整锚点，暂停滚动')
         self.move_to_anchor(anchor)
         if self.stop is not None:
-            if self.stop.wait(0.1):
+            if self.stop.wait(0.02):
                 raise Stopped('已停止（停止按钮 / F8）')
         else:
-            time.sleep(0.1)
+            time.sleep(0.02)
         # Compare after repositioning the cursor; its movement/hover must not
         # be mistaken for the level list continuing to scroll at the bottom.
         before = cv.resize(self.frame(), REFERENCE)
         self.guard()
         self.mouse.scroll(-3)
         if self.stop is not None:
-            if self.stop.wait(0.25):
+            if self.stop.wait(self.scroll_interval):
                 raise Stopped('已停止（停止按钮 / F8）')
         else:
-            time.sleep(0.25)
+            time.sleep(self.scroll_interval)
         after = cv.resize(self.frame(), REFERENCE)
         before = cv.cvtColor(before[140:1390, :455], cv.COLOR_BGR2GRAY)
         after = cv.cvtColor(after[140:1390, :455], cv.COLOR_BGR2GRAY)

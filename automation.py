@@ -416,9 +416,10 @@ def main():
         print('5 秒后开始，请打开图一。F8 停止。')
         if stop.wait(5):
             return
-        desktop = workflow.DesktopBackend(stop, title=load_config().get('window_title', ''))
+        config = workflow.settings(load_config())
+        desktop = workflow.DesktopBackend(stop, title=config['window_title'], scroll_interval=config['scroll_interval'])
         try:
-            workflow.Controller(load_config(), desktop, stop).run()
+            workflow.Controller(config, desktop, stop).run()
         except Stopped as error:
             print(error)
 

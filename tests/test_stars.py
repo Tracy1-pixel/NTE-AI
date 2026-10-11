@@ -31,6 +31,7 @@ class StarTests(unittest.TestCase):
         backend.reader = SimpleNamespace(cv=cv2)
         backend.stop = threading.Event()
         backend.scroll_stable = 0
+        backend.scroll_interval = 0.1
         backend.guard = lambda: None
         backend.point = lambda x, y: ClientArea(100, 200, 1920, 1080).point(x, y, REFERENCE)
         frames = iter(frames)

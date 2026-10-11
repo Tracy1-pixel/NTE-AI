@@ -17,7 +17,7 @@ class Game:
         self.retry_delay = 0
         self.level_visible = False
 
-    def observe(self):
+    def observe(self, *, read_selected=True):
         if self.retry_delay:
             self.retry_delay -= 1
             if not self.retry_delay:
@@ -92,6 +92,41 @@ class WorkflowTests(unittest.TestCase):
         with self.assertRaisesRegex(Stopped, '界面错误'):
             controller.run()
         self.assertEqual(game.actions, [])
+
+    def test_scroll_does_not_add_button_transition_delay(self):
+        game = Game()
+        controller, _ = self.make(game)
+        before = controller.clock()
+        controller.action('scroll_step')
+        self.assertEqual(controller.clock(), before)
+        controller.action('start')
+        self.assertAlmostEqual(controller.clock() - before, 0.3)
+
+    def test_scroll_interval_is_separate_from_score_scan_interval(self):
+        self.assertEqual(settings({'scan_interval': 0.25})['scroll_interval'], 0.1)
+        self.assertEqual(settings({'scroll_interval': 0.05})['scroll_interval'], 0.05)
+        for value in (0, -1, 0.01, float('inf'), float('nan')):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                settings({'scroll_interval': value})
+
+    def test_capture_failure_after_scrolling_waits_between_retries(self):
+        game = Game()
+        controller, stop = self.make(game)
+        observe = game.observe
+        failures = []
+        def lose_foreground(*, read_selected=True):
+            if 'scroll_step' in game.actions:
+                failures.append(controller.clock())
+                if len(failures) >= 3:
+                    stop.set()
+                raise ValueError('游戏不在前台')
+            return observe(read_selected=read_selected)
+        game.observe = lose_foreground
+        with self.assertRaisesRegex(Stopped, 'F8'):
+            controller.run()
+        self.assertEqual(len(failures), 3)
+        self.assertTrue(all(b - a >= controller.c['scan_interval'] - 1e-8 for a, b in zip(failures, failures[1:])))
+        self.assertNotIn('start', game.actions)
 
     def test_no_cursor_pauses_before_any_movement_scroll_or_click(self):
         class MissingCursor(Game):
@@ -246,8 +281,8 @@ class WorkflowTests(unittest.TestCase):
         class UnknownAfterHammer(Game):
             seen_unknown = False
             unsafe_clicks = 0
-            def observe(self):
-                scene = super().observe()
+            def observe(self, *, read_selected=True):
+                scene = super().observe(read_selected=read_selected)
                 if scene.page == 'unknown':
                     self.seen_unknown = True
                 return scene

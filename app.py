@@ -60,7 +60,7 @@ def self_test(report):
             raise RuntimeError('真实截图 3-10 OCR 自检失败')
         for name, expected, parser in (('score_zero', 0, engine.parse_score), ('score_goal', 1927, engine.parse_score), ('city_sample', 652, workflow.fraction), ('cost_sample', 48, workflow.integer)):
             image = cv2.imread(str(workflow.ASSETS / (name + '.png')))
-            actual = parser(reader.text(image))
+            actual = reader.number(image, parser)
             if actual != expected:
                 raise RuntimeError(f'真实截图 OCR 自检失败：{name}={actual}')
         import tkinter as tk
@@ -169,7 +169,7 @@ class App:
         self.busy = False
         self.runtime = RuntimeStatus()
         self.overlay = None
-        root.title('异环助手 · 店长特供 1.1.0（光标反馈调试）')
+        root.title('异环助手 · 店长特供 1.1.9')
         root.geometry('980x820')
         root.minsize(920, 760)
         root.configure(bg='#0b1220')
@@ -207,7 +207,7 @@ class App:
         self.config_button = ttk.Button(sidebar, text='七图流程说明', command=self.configure)
         self.config_button.pack(fill='x', pady=5)
         tk.Label(sidebar, text='01  识别初始界面\n\n02  三星锚点 / 选关\n\n03  锤子连点\n\n04  结算 / 重试', bg='#101b31', fg='#8fa1bc', justify='left', font=('Microsoft YaHei UI', 10), anchor='nw').pack(fill='x', pady=30)
-        tk.Label(sidebar, text='当前游戏窗口\n自动读取尺寸\n\nv1.1.0', bg='#101b31', fg='#61738d', justify='left', font=('Segoe UI', 10), anchor='sw').pack(side='bottom', fill='x')
+        tk.Label(sidebar, text='当前游戏窗口\n自动读取尺寸\n\nv1.1.9', bg='#101b31', fg='#61738d', justify='left', font=('Segoe UI', 10), anchor='sw').pack(side='bottom', fill='x')
 
         outer = ttk.Frame(root, padding=(24, 22))
         outer.pack(fill='both', expand=True)
@@ -246,11 +246,13 @@ class App:
         options = ttk.LabelFrame(outer, text='运行参数', padding=12)
         options.pack(fill='x', pady=(0, 10))
         self.fields = {}
-        for column, (name, label) in enumerate((('click_interval', '点击间隔 / 秒'), ('scan_interval', '识别间隔 / 秒'))):
-            ttk.Label(options, text=label).grid(row=0, column=column*2, padx=(0, 10), sticky='w')
+        for index, (name, label) in enumerate((('click_interval', '点击间隔 / 秒'), ('scan_interval', '识别间隔 / 秒'), ('scroll_interval', '滚动间隔 / 秒'))):
+            row, column = divmod(index, 2)
+            ttk.Label(options, text=label).grid(row=row, column=column*2, padx=(0, 10), pady=3, sticky='w')
             variable = tk.StringVar()
             self.fields[name] = variable
-            ttk.Entry(options, textvariable=variable, width=10).grid(row=0, column=column*2+1, padx=(0, 18))
+            ttk.Entry(options, textvariable=variable, width=10).grid(row=row, column=column*2+1, padx=(0, 18), pady=3)
+        ttk.Label(options, text='默认 0.1；越小滚动越快，至少 0.05。', style='Muted.TLabel').grid(row=1, column=2, columnspan=2, sticky='w')
 
         actions = ttk.Frame(outer)
         actions.pack(fill='x', pady=(3, 8))
@@ -444,7 +446,7 @@ class App:
                         emit(f'光标图形诊断未完成：{error}；上方坐标 / 权限诊断仍可使用。')
                 self.events.put(('runtime', {'phase': '诊断完成', 'state': 'stopped', 'details': '鼠标诊断完成，请复制运行记录中的诊断信息'}))
                 return
-            desktop = workflow.DesktopBackend(self.stop, config['window_title'], handle, prepare=(mode == 'run'), capture_shield=self.overlay.shield if self.overlay else None, log=emit)
+            desktop = workflow.DesktopBackend(self.stop, config['window_title'], handle, prepare=(mode == 'run'), capture_shield=self.overlay.shield if self.overlay else None, log=emit, scroll_interval=config['scroll_interval'])
             if self.stop.is_set():
                 raise engine.Stopped('已停止')
             if mode == 'check':
@@ -452,6 +454,7 @@ class App:
                 emit(f'当前界面：{scene.page}；营业额：{scene.score}；都市体力：{scene.city}；领取消耗：{scene.cost}')
                 emit('检查不会点击或改变窗口尺寸。使用当前内容区；开始运行必须是图一。')
             else:
+                emit(f'版本 1.1.9：滚动间隔 {config["scroll_interval"]} 秒；数字 OCR 快速识别与失败回退已启用。')
                 workflow.Controller(config, desktop, self.stop, log=emit, report=lambda data: self.events.put(('runtime', data))).run()
         except engine.Stopped as error:
             emit(str(error))
