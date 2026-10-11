@@ -169,7 +169,7 @@ class App:
         self.busy = False
         self.runtime = RuntimeStatus()
         self.overlay = None
-        root.title('异环助手 · 店长特供 1.1.9')
+        root.title('异环助手 · 店长特供 1.1.10')
         root.geometry('980x820')
         root.minsize(920, 760)
         root.configure(bg='#0b1220')
@@ -204,10 +204,7 @@ class App:
         tk.Label(sidebar, text='NTE', bg='#101b31', fg='#42ddbc', font=('Segoe UI', 30, 'bold'), anchor='w').pack(fill='x')
         tk.Label(sidebar, text='异环助手', bg='#101b31', fg='#eef5ff', font=('Microsoft YaHei UI', 17, 'bold'), anchor='w').pack(fill='x', pady=(4, 30))
         ttk.Button(sidebar, text='控制台', style='Accent.TButton', command=lambda: root.deiconify()).pack(fill='x', pady=5)
-        self.config_button = ttk.Button(sidebar, text='七图流程说明', command=self.configure)
-        self.config_button.pack(fill='x', pady=5)
-        tk.Label(sidebar, text='01  识别初始界面\n\n02  三星锚点 / 选关\n\n03  锤子连点\n\n04  结算 / 重试', bg='#101b31', fg='#8fa1bc', justify='left', font=('Microsoft YaHei UI', 10), anchor='nw').pack(fill='x', pady=30)
-        tk.Label(sidebar, text='当前游戏窗口\n自动读取尺寸\n\nv1.1.9', bg='#101b31', fg='#61738d', justify='left', font=('Segoe UI', 10), anchor='sw').pack(side='bottom', fill='x')
+        tk.Label(sidebar, text='当前游戏窗口\n自动读取尺寸\n\nv1.1.10', bg='#101b31', fg='#61738d', justify='left', font=('Segoe UI', 10), anchor='sw').pack(side='bottom', fill='x')
 
         outer = ttk.Frame(root, padding=(24, 22))
         outer.pack(fill='both', expand=True)
@@ -265,14 +262,11 @@ class App:
         self.diagnose_button = ttk.Button(actions, text='鼠标诊断', command=lambda: self.launch('diagnose'))
         self.diagnose_button.pack(side='left')
         ttk.Label(actions, text='F8  快捷停止', style='Muted.TLabel').pack(side='right')
-        self.status = tk.StringVar(value='准备就绪，请打开图一的店长特供界面。')
+        self.status = tk.StringVar(value='准备就绪，请打开店长特供选关界面。')
         ttk.Label(outer, textvariable=self.status, wraplength=680).pack(anchor='w', pady=(3, 7))
         self.summary = tk.StringVar()
         ttk.Label(outer, textvariable=self.summary, wraplength=680, style='Muted.TLabel').pack(anchor='w')
-        self.preview_frame = ttk.Frame(outer)
-        self.preview_frame.pack(fill='x', pady=10)
-        self.preview_images = []
-        ttk.Label(outer, text='运行记录', foreground='#eef5ff').pack(anchor='w', pady=(4, 5))
+        ttk.Label(outer, text='运行记录', foreground='#eef5ff').pack(anchor='w', pady=(14, 5))
         log_frame = ttk.Frame(outer)
         log_frame.pack(fill='both', expand=True)
         self.logs = tk.Text(log_frame, height=6, state='disabled', wrap='word', bg='#101b31', fg='#bbcee6', insertbackground='#eef5ff', relief='flat', padx=12, pady=8, font=('Microsoft YaHei UI', 9))
@@ -324,26 +318,7 @@ class App:
             c = workflow.settings(engine.load_config())
             for name, variable in self.fields.items():
                 variable.set(str(c[name]))
-            try:
-                workflow.settings(c)
-                self.summary.set('已内置七图流程；只有识别到图一才能开始，体力/消耗为 0 或连续失败三次时停止。')
-            except (ValueError, KeyError) as error:
-                self.summary.set(f'配置尚未完成：{error}')
-            for child in self.preview_frame.winfo_children():
-                child.destroy()
-            self.preview_images.clear()
-            from PIL import Image, ImageTk
-            for name, label in (('star_triplet', '三星滚动锚点'), ('score_goal', '营业额'), ('cost_sample', '领取消耗')):
-                path = workflow.ASSETS / f'{name}.png'
-                if path.exists():
-                    with Image.open(path) as source:
-                        image = source.copy()
-                    image.thumbnail((280, 65))
-                    photo = ImageTk.PhotoImage(image)
-                    self.preview_images.append(photo)
-                    box = self.ttk.LabelFrame(self.preview_frame, text=label, padding=4)
-                    box.pack(side='left', padx=5)
-                    self.ttk.Label(box, image=photo).pack()
+            self.summary.set('请在店长特供选关界面开始；体力耗尽或连续失败三次时自动停止。')
         except Exception as error:
             self.log(f'读取配置失败：{error}')
 
@@ -352,31 +327,6 @@ class App:
         self.logs.insert('end', time.strftime('%H:%M:%S ') + str(text) + '\n')
         self.logs.see('end')
         self.logs.configure(state='disabled')
-
-    def configure(self):
-        from tkinter import messagebox
-        window = self.tk.Toplevel(self.root)
-        window.title('七图流程预设')
-        window.geometry('640x480')
-        text = ('① 图一：必须是店长特供关卡选择页面。\n'
-                '② 识别光标和左侧连续三星整体锚点，光标移到锚点上逐批滚动；每批 OCR 查找 3-10，找到即点击，再点开始营业。\n'
-                '③ 图三倒计时与图四营业阶段：连续点击左侧锤子。\n'
-                '④ 营业额达到 1900：点击左上退出图标，等待图七。\n'
-                '⑤ 图七：读取领取下方消耗，非零时领取，返回图一。\n'
-                '⑥ 图五：点击重新挑战，直接等待倒计时；连续失败三次停止。\n'
-                '⑦ 都市体力或领取消耗连续确认为 0 时停止。\n\n'
-                '停止按钮 / F8 手动停止，没有总时长和轮数上限。\n'
-                '未知界面或运行错误时暂停操作，等待恢复；F8 停止。\n'
-                '沿用当前游戏窗口，不调整尺寸和位置；识别与点击跟随实际内容区。')
-        self.ttk.Label(window, text=text, wraplength=570, padding=20).pack()
-        def use():
-            try:
-                engine.save_config(workflow.settings(engine.load_config()))
-                self.refresh()
-                window.destroy()
-            except Exception as error:
-                messagebox.showerror('保存失败', str(error), parent=window)
-        self.ttk.Button(window, text='使用预设并返回', command=use).pack(pady=10)
 
     def launch(self, mode):
         from tkinter import messagebox
@@ -403,7 +353,7 @@ class App:
         self.stop_button.configure(state='normal')
         if self.overlay:
             self.overlay.attach(handle)
-        for button in (self.config_button, self.check_button, self.diagnose_button, self.start_button, self.window_refresh):
+        for button in (self.check_button, self.diagnose_button, self.start_button, self.window_refresh):
             button.configure(state='disabled')
         self.log('窗口最小化，5 秒后处理游戏画面，请切回游戏。')
         self.root.iconify()
@@ -454,7 +404,7 @@ class App:
                 emit(f'当前界面：{scene.page}；营业额：{scene.score}；都市体力：{scene.city}；领取消耗：{scene.cost}')
                 emit('检查不会点击或改变窗口尺寸。使用当前内容区；开始运行必须是图一。')
             else:
-                emit(f'版本 1.1.9：滚动间隔 {config["scroll_interval"]} 秒；数字 OCR 快速识别与失败回退已启用。')
+                emit(f'版本 1.1.10：滚动间隔 {config["scroll_interval"]} 秒；数字 OCR 快速识别与失败回退已启用。')
                 workflow.Controller(config, desktop, self.stop, log=emit, report=lambda data: self.events.put(('runtime', data))).run()
         except engine.Stopped as error:
             emit(str(error))
@@ -485,7 +435,7 @@ class App:
                     if self.overlay:
                         self.overlay.hide()
                     self.window_list.configure(state='readonly')
-                    for button in (self.config_button, self.check_button, self.diagnose_button, self.start_button, self.window_refresh):
+                    for button in (self.check_button, self.diagnose_button, self.start_button, self.window_refresh):
                         button.configure(state='normal')
                     self.root.deiconify()
         except queue.Empty:
