@@ -169,7 +169,7 @@ class App:
         self.busy = False
         self.runtime = RuntimeStatus()
         self.overlay = None
-        root.title('异环助手 · 店长特供 1.8')
+        root.title('异环助手 · 店长特供 1.1.0')
         root.geometry('980x820')
         root.minsize(920, 760)
         root.configure(bg='#0b1220')
@@ -207,7 +207,7 @@ class App:
         self.config_button = ttk.Button(sidebar, text='七图流程说明', command=self.configure)
         self.config_button.pack(fill='x', pady=5)
         tk.Label(sidebar, text='01  识别初始界面\n\n02  三星锚点 / 选关\n\n03  锤子连点\n\n04  结算 / 重试', bg='#101b31', fg='#8fa1bc', justify='left', font=('Microsoft YaHei UI', 10), anchor='nw').pack(fill='x', pady=30)
-        tk.Label(sidebar, text='当前游戏窗口\n自动读取尺寸\n\nv1.8.0', bg='#101b31', fg='#61738d', justify='left', font=('Segoe UI', 10), anchor='sw').pack(side='bottom', fill='x')
+        tk.Label(sidebar, text='当前游戏窗口\n自动读取尺寸\n\nv1.1.0', bg='#101b31', fg='#61738d', justify='left', font=('Segoe UI', 10), anchor='sw').pack(side='bottom', fill='x')
 
         outer = ttk.Frame(root, padding=(24, 22))
         outer.pack(fill='both', expand=True)
