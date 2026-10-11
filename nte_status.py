@@ -20,9 +20,10 @@ class RuntimeStatus:
     mode: str = 'loop'
     level: str = '3-10'
     goal: int | None = 1900
+    auction_average: int | None = None
 
     def apply(self, data):
-        for name in ('phase', 'state', 'details', 'score', 'completed', 'failures', 'mode', 'level', 'goal'):
+        for name in ('phase', 'state', 'details', 'score', 'completed', 'failures', 'mode', 'level', 'goal', 'auction_average'):
             if name in data:
                 setattr(self, name, data[name])
 
@@ -36,6 +37,10 @@ class RuntimeStatus:
         score = '—' if self.score is None else f'{self.score:,}'
         goal = '—' if self.goal is None else f'{self.goal:,}'
         return f'{score} / {goal}'
+
+    @property
+    def average_text(self):
+        return '—' if self.auction_average is None else f'{self.auction_average:,}'
 
     @property
     def mode_text(self):

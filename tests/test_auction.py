@@ -6,7 +6,7 @@ import cv2
 import numpy as np
 
 from automation import Stopped
-from nte_auction import AuctionBackend, AuctionController, AuctionReader, AuctionScene, Box, USE_LABELS
+from nte_auction import AuctionBackend, AuctionController, AuctionReader, AuctionScene, Box, USE_LABELS, BID_AMOUNT
 
 
 def word(text, x, y, w=160, h=30, confidence=0.99):
@@ -24,6 +24,81 @@ class ReaderTests(unittest.TestCase):
         if target:
             rows.append(word('至尊仪器组', 745, 800))
         return rows
+
+    def game(self, value='3,626'):
+        return [word('仪器', 490, 1320, w=75), word('出价', 2310, 1320, w=75),
+                word('竞拍第1回合', 1140, 240, w=260), word('00:08', 1240, 80, w=90),
+                word('ESC', 40, 105, w=45, h=20), word('九格均价仪器', 1040, 650, w=250),
+                word('本局内九格藏品的平均价值为' + value + '。', 1040, 720, w=580),
+                word('我的资产', 1920, 70), word('27,304,476', 2260, 70), word('当前估价：516,441', 2000, 200)]
+
+    def game_list(self):
+        return [word('仪器列表', 865, 150, h=40), word('至尊鉴定仪器', 1030, 310),
+                word('九格均价仪器', 1030, 990, w=250), word('使用', 1240, 1200, w=90)]
+
+    def keypad(self, amount=None):
+        rows = self.game() + [word('请输入你愿意出的价格', 1600, 840, w=300),
+                             word('确认出价', 1650, 1280, w=200), word('清空', 1250, 1280, w=100, h=40),
+                             word('推荐出价参考：800,000', 1600, 885, w=300),
+                             word('可输入范围0~27,304,476', 1560, 1040, w=390)]
+        for digit in range(1, 10):
+            rows.append(word(str(digit), 580 + ((digit-1) % 3) * 220, 770 + ((digit-1) // 3) * 170, w=60, h=40))
+        for i, label in enumerate(('0', '00', '0000')):
+            rows.append(word(label, 580 + i * 220, 1280, w=60, h=40))
+        if amount is not None:
+            rows.append(word(str(amount), 1620, 1010, w=240, h=40))
+        return rows
+
+    def test_game_requires_round_instrument_and_bid_anchors(self):
+        scene = self.reader.from_rows(self.game(), self.frame)
+        self.assertEqual((scene.page, scene.round_number, scene.countdown, scene.average), ('game', 1, 8, 3626))
+        self.assertIsNotNone(scene.exit)
+        self.assertEqual(self.reader.from_rows(self.game()[1:], self.frame).page, 'unknown')
+
+    def test_average_does_not_use_assets_estimate_or_malformed_numbers(self):
+        for value in ('350,001', '350000', '0', '123,456,789'):
+            self.assertEqual(self.reader.from_rows(self.game(value), self.frame).average, int(value.replace(',', '')))
+        for value in ('', '-3626', '3,62', '3,626.5', 'O,626'):
+            with self.subTest(value=value):
+                self.assertIsNone(self.reader.from_rows(self.game(value), self.frame).average)
+        self.assertIsNone(self.reader.from_rows(self.game()[:-4], self.frame).average)
+
+    def test_average_split_ocr_value_is_joined_on_the_same_line_only(self):
+        rows = self.game()[:6] + [word('本局内九格藏品的平均价值为', 1040, 720, w=390), word('3,626。', 1440, 720, w=120)]
+        self.assertEqual(self.reader.from_rows(rows, self.frame).average, 3626)
+        rows[-1] = word('3,626。', 1440, 805, w=120)
+        self.assertIsNone(self.reader.from_rows(rows, self.frame).average)
+
+    def test_in_game_instrument_list_is_distinct_from_preparation(self):
+        cv2.rectangle(self.frame, (890, 965), (1650, 1125), (140, 60, 245), 5)
+        scene = self.reader.from_rows(self.game_list(), self.frame)
+        self.assertEqual(scene.page, 'instrument_list')
+        self.assertTrue(scene.selected)
+        self.assertEqual(scene.use_label, '使用')
+        duplicate = self.game_list() + [word('九格均价仪器', 1030, 670, w=250)]
+        self.assertIsNone(self.reader.from_rows(duplicate, self.frame).target)
+
+    def test_keypad_geometry_and_current_amount_are_required(self):
+        scene = self.reader.from_rows(self.keypad('5,000,000'), self.frame)
+        self.assertEqual((scene.page, scene.bid_amount), ('bid_input', BID_AMOUNT))
+        self.assertEqual(set(scene.keys), {'5', '00', '0000', 'clear'})
+        self.assertIsNone(self.reader.from_rows(self.keypad(), self.frame).bid_amount)
+        missing = [row for row in self.keypad() if row[1] != '0000']
+        self.assertEqual(self.reader.from_rows(missing, self.frame).page, 'unknown')
+        needed = [row for row in self.keypad('5,000,000') if row[1] not in tuple('123467890')]
+        self.assertEqual(self.reader.from_rows(needed, self.frame).bid_amount, BID_AMOUNT)
+
+    def test_bid_confirmation_reads_actual_amount_separately_from_entry(self):
+        rows = [word('提示', 1150, 300), word('检测到当前出价5,000,000疑似异常过高，是否确认出价？', 730, 520, w=1150),
+                word('取消', 900, 750), word('确认', 1450, 750)]
+        scene = self.reader.from_rows(rows, self.frame)
+        self.assertEqual((scene.page, scene.bid_amount), ('bid_confirm', BID_AMOUNT))
+        rows[1] = word('检测到当前出价6,666,666疑似异常过高，是否确认出价？', 730, 520, w=1150)
+        self.assertEqual(self.reader.from_rows(rows, self.frame).bid_amount, 6666666)
+
+    def test_unknown_dialog_over_game_does_not_allow_underlying_buttons(self):
+        rows = self.game() + [word('提示', 1150, 300), word('确认', 1450, 750), word('取消', 900, 750)]
+        self.assertEqual(self.reader.from_rows(rows, self.frame).page, 'unknown')
 
     def test_home_requires_both_auction_title_and_start_button(self):
         rows = [word('即刻落槌', 150, 60), word('至尊仪器组', 1680, 1050), word('开始匹配', 1950, 1320)]
@@ -111,6 +186,10 @@ class FakeAuction:
         self.label = label
         self.point = Box(750, 800, 160, 30)
         self.loading_reads = 0
+        self.average = 3626
+        self.average_used = False
+        self.bid_amount = None
+        self.confirm_amount = BID_AMOUNT
 
     def observe(self):
         if self.page == 'home':
@@ -121,7 +200,17 @@ class FakeAuction:
             self.loading_reads += 1
             if self.loading_reads <= 3:
                 return AuctionScene('loading', progress=100)
-            return AuctionScene('unknown')
+            return AuctionScene('game', instrument=self.point, exit=self.point, bid=self.point,
+                                average=self.average if self.average_used else None)
+        if self.page == 'game':
+            return AuctionScene('game', instrument=self.point, exit=self.point, bid=self.point,
+                                average=self.average if self.average_used else None)
+        if self.page == 'instrument_list':
+            return AuctionScene('instrument_list', target=self.point, selected=True, use=self.point, use_label='使用')
+        if self.page == 'bid_input':
+            return AuctionScene('bid_input', bid_amount=self.bid_amount, bid_submit=self.point)
+        if self.page == 'bid_confirm':
+            return AuctionScene('bid_confirm', bid_amount=self.confirm_amount, confirm=self.point)
         if self.page == 'unknown':
             return AuctionScene('unknown')
         return AuctionScene('instruments', listing=Box(720, 300, 350, 680), target=self.point if self.target else None,
@@ -142,6 +231,23 @@ class FakeAuction:
             self.page = 'entry_confirm'
         elif action == 'confirm':
             self.page = 'loading'
+        elif action == 'game_open':
+            self.page = 'instrument_list'
+        elif action == 'average_use':
+            self.average_used = True
+            self.page = 'game'
+        elif action == 'exit':
+            self.page = 'home'
+        elif action == 'bid_open':
+            self.page = 'bid_input'
+        elif action == 'bid_submit':
+            self.page = 'bid_confirm'
+        elif action == 'bid_confirm':
+            self.page = 'game'
+
+    def fill_bid(self):
+        self.actions.append('fill_bid')
+        self.bid_amount = BID_AMOUNT
 
     def scroll_groups(self, scene):
         self.actions.append('scroll')
@@ -168,8 +274,9 @@ class FlowTests(unittest.TestCase):
                 reports = []
                 controller.report = reports.append
                 controller.run()
-                self.assertEqual(backend.actions, ['open', 'scroll', 'select', 'use', 'start', 'confirm'])
-                self.assertEqual((reports[-1]['phase'], reports[-1]['state']), ('等待后续流程', 'stopped'))
+                self.assertEqual(backend.actions, ['open', 'scroll', 'select', 'use', 'start', 'confirm', 'game_open', 'average_select', 'average_use', 'exit'])
+                self.assertEqual((reports[-1]['phase'], reports[-1]['state']), ('已退出本局', 'stopped'))
+                self.assertEqual(reports[-1]['auction_average'], 3626)
                 self.assertEqual(controller.completed, 1)
 
     def test_wrong_initial_screen_never_sends_input(self):
@@ -270,12 +377,27 @@ class FlowTests(unittest.TestCase):
     def test_one_missing_loading_frame_does_not_finish_observation(self):
         backend = FakeAuction()
         original = backend.observe
+        game = AuctionScene('game', instrument=backend.point, exit=backend.point, bid=backend.point)
         frames = iter([AuctionScene('loading', progress=90), AuctionScene('unknown'),
-                       AuctionScene('loading', progress=100), AuctionScene('unknown'), AuctionScene('unknown')])
+                       AuctionScene('loading', progress=100), game, game])
         backend.observe = lambda: next(frames) if backend.page == 'loading' else original()
         controller = self.controller(backend)
         controller.run()
         self.assertEqual(controller.completed, 1)
+
+    def test_loading_disappearance_without_game_anchors_never_opens_instruments(self):
+        backend = FakeAuction()
+        original = backend.observe
+        reads = [0]
+        def observe():
+            if backend.page == 'loading':
+                reads[0] += 1
+                return AuctionScene('loading', progress=100) if reads[0] == 1 else AuctionScene('unknown')
+            return original()
+        backend.observe = observe
+        with self.assertRaisesRegex(Stopped, 'F8'):
+            self.controller(backend).run()
+        self.assertNotIn('game_open', backend.actions)
 
     def test_stationary_list_pauses_after_two_batches(self):
         backend = FakeAuction()
@@ -289,8 +411,157 @@ class FlowTests(unittest.TestCase):
         self.assertEqual(len(batches), 2)
         self.assertEqual(backend.actions, ['open'])
 
+    def test_strict_threshold_equal_or_lower_exits_without_bidding(self):
+        for value in (0, 3626, 349999, 350000):
+            with self.subTest(value=value):
+                backend = FakeAuction()
+                backend.average = value
+                controller = self.controller(backend)
+                controller.run()
+                self.assertEqual(controller.average, value)
+                self.assertEqual(backend.actions.count('exit'), 1)
+                self.assertNotIn('bid_open', backend.actions)
+
+    def test_above_threshold_bids_exactly_once_then_waits_until_cancel(self):
+        backend = FakeAuction()
+        backend.average = 350001
+        controller = self.controller(backend)
+        reports = []
+        controller.report = reports.append
+        with self.assertRaisesRegex(Stopped, 'F8'):
+            controller.run()
+        self.assertEqual(backend.actions[-4:], ['bid_open', 'fill_bid', 'bid_submit', 'bid_confirm'])
+        self.assertEqual(backend.actions.count('bid_submit'), 1)
+        self.assertEqual(backend.actions.count('bid_confirm'), 1)
+        self.assertNotIn('exit', backend.actions)
+        self.assertEqual((reports[-1]['phase'], reports[-1]['auction_average']), ('等待竞拍结果', 350001))
+
+    def test_wrong_secondary_confirmation_amount_is_never_approved(self):
+        backend = FakeAuction()
+        backend.average = 500000
+        backend.confirm_amount = 6666666
+        with self.assertRaisesRegex(Stopped, 'F8'):
+            self.controller(backend).run()
+        self.assertIn('bid_submit', backend.actions)
+        self.assertNotIn('bid_confirm', backend.actions)
+
+    def test_no_warning_returns_to_game_without_repeating_bid(self):
+        backend = FakeAuction()
+        backend.average = 500000
+        original = backend.click_checked
+        def click(scene, action='select'):
+            original(scene, action)
+            if action == 'bid_submit':
+                backend.page = 'game'
+        backend.click_checked = click
+        with self.assertRaisesRegex(Stopped, 'F8'):
+            self.controller(backend).run()
+        self.assertEqual(backend.actions.count('bid_submit'), 1)
+        self.assertNotIn('bid_confirm', backend.actions)
+
+    def test_wrong_keypad_amount_prevents_submit(self):
+        backend = FakeAuction()
+        backend.average = 500000
+        def fill():
+            backend.actions.append('fill_bid')
+            backend.bid_amount = 50000000
+        backend.fill_bid = fill
+        with self.assertRaisesRegex(Stopped, 'F8'):
+            self.controller(backend).run()
+        self.assertNotIn('bid_submit', backend.actions)
+
+    def test_unreadable_average_does_not_bid_exit_or_reuse_instrument(self):
+        backend = FakeAuction()
+        backend.average = None
+        with self.assertRaisesRegex(Stopped, 'F8'):
+            self.controller(backend).run()
+        self.assertEqual(backend.actions.count('average_use'), 1)
+        self.assertNotIn('bid_open', backend.actions)
+        self.assertNotIn('exit', backend.actions)
+
+    def test_fluctuating_average_never_authorizes_a_decision(self):
+        backend = FakeAuction()
+        original = backend.observe
+        readings = [0]
+        def observe():
+            scene = original()
+            if scene.page == 'game' and backend.average_used:
+                readings[0] += 1
+                scene.average = 100000 if readings[0] % 2 else 500000
+            return scene
+        backend.observe = observe
+        with self.assertRaisesRegex(Stopped, 'F8'):
+            self.controller(backend).run()
+        self.assertNotIn('bid_open', backend.actions)
+        self.assertNotIn('exit', backend.actions)
+
+    def test_cancel_after_instrument_selection_prevents_use_and_bidding(self):
+        backend = FakeAuction()
+        controller = self.controller(backend)
+        original = backend.click_checked
+        def click(scene, action='select'):
+            original(scene, action)
+            if action == 'average_select':
+                controller.stop.set()
+        backend.click_checked = click
+        with self.assertRaisesRegex(Stopped, 'F8'):
+            controller.run()
+        self.assertNotIn('average_use', backend.actions)
+        self.assertNotIn('bid_open', backend.actions)
+
 
 class ClickTests(unittest.TestCase):
+    def test_warning_amount_change_after_moving_prevents_confirmation(self):
+        backend = AuctionBackend.__new__(AuctionBackend)
+        clicks = []
+        box = Box(1450, 750, 150, 30)
+        backend.move_verified = lambda *args: None
+        backend.observe = lambda: AuctionScene('bid_confirm', confirm=box, bid_amount=6666666)
+        backend.guard = lambda: None
+        backend.mouse = SimpleNamespace(click=lambda: clicks.append('click'))
+        with self.assertRaisesRegex(ValueError, '金额未确认'):
+            backend.click_checked(AuctionScene('bid_confirm', confirm=box, bid_amount=BID_AMOUNT), 'bid_confirm')
+        self.assertEqual(clicks, [])
+
+    def keypad_backend(self, wrong_feedback=False, cancel_after_key=False):
+        backend = AuctionBackend.__new__(AuctionBackend)
+        labels = ('clear', '5', '00', '0000')
+        keys = {label: Box(100 + i * 90, 600, 50, 30) for i, label in enumerate(labels)}
+        state = {'amount': 888888, 'point': None, 'clicks': [], 'stopped': False}
+        backend.point = lambda x, y: (x, y)
+        backend.move_verified = lambda x, y, _: state.update(point=(x, y))
+        backend.cursor_position = lambda: SimpleNamespace(point=state['point'])
+        def guard():
+            if state['stopped']:
+                raise Stopped('F8')
+        backend.guard = guard
+        backend.observe = lambda: AuctionScene('bid_input', keys=keys, bid_amount=state['amount'])
+        def click():
+            label = next(label for label, box in keys.items() if box.center == state['point'])
+            state['clicks'].append(label)
+            state['amount'] = None if label == 'clear' else (6 if wrong_feedback else int(str(state['amount'] or '') + label))
+            state['stopped'] = cancel_after_key
+        backend.mouse = SimpleNamespace(click=click, wait=lambda _: None)
+        return backend, state
+
+    def test_virtual_keypad_clears_then_builds_verified_five_million(self):
+        backend, state = self.keypad_backend()
+        backend.fill_bid()
+        self.assertEqual(state['clicks'], ['clear', '5', '00', '0000'])
+        self.assertEqual(state['amount'], BID_AMOUNT)
+
+    def test_wrong_key_feedback_stops_remaining_digits(self):
+        backend, state = self.keypad_backend(wrong_feedback=True)
+        with self.assertRaisesRegex(ValueError, '反馈不符合'):
+            backend.fill_bid()
+        self.assertEqual(state['clicks'], ['clear', '5'])
+
+    def test_cancel_during_keypad_entry_stops_remaining_digits(self):
+        backend, state = self.keypad_backend(cancel_after_key=True)
+        with self.assertRaisesRegex(Stopped, 'F8'):
+            backend.fill_bid()
+        self.assertEqual(state['clicks'], ['clear'])
+
     def test_verified_cursor_and_fresh_scene_send_actual_click(self):
         backend = AuctionBackend.__new__(AuctionBackend)
         clicks = []

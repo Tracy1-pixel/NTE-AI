@@ -81,7 +81,7 @@ class Overlay:
             return None
         area = self.api.geometry(self.target)
         self.headline.configure(text=f'{area.width} × {area.height}   ·   {status.phase}')
-        metrics = f'目标 至尊仪器组   ·   {"准备完成" if status.completed else "准备中"}' if status.mode == 'auction' else f'营业额 {status.score_text}   ·   完成 {status.completed} {status.progress_unit}   ·   失败 {status.failures}/3'
+        metrics = f'九格平均价值 {status.average_text}   ·   门槛 350,000' if status.mode == 'auction' else f'营业额 {status.score_text}   ·   完成 {status.completed} {status.progress_unit}   ·   失败 {status.failures}/3'
         self.metrics.configure(text=metrics)
         text = status.details if status.state in ('paused', 'error') else (f'{status.mode_text} · 目标 {status.level}' if status.mode == 'auction' else f'{status.mode_text} · 当前关卡 {status.level}')
         self.detail.configure(text=f'{text[:34]}   |   F8 停止')

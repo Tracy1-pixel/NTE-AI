@@ -69,6 +69,16 @@ class OverlayTests(unittest.TestCase):
         self.assertEqual(status.color, '#ffc267')
         self.assertEqual((status.completed, status.failures), (2, 1))
 
+    def test_average_status_preserves_actual_value_and_zero(self):
+        status = RuntimeStatus(mode='auction')
+        self.assertEqual(status.average_text, '—')
+        status.apply({'auction_average': 3626})
+        self.assertEqual(status.average_text, '3,626')
+        status.apply({'phase': '等待竞拍结果', 'state': 'running'})
+        self.assertEqual(status.auction_average, 3626)
+        status.apply({'auction_average': 0})
+        self.assertEqual(status.average_text, '0')
+
 
 if __name__ == '__main__':
     unittest.main()
