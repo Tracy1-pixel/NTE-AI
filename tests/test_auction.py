@@ -1,12 +1,13 @@
 import threading
 import unittest
 from types import SimpleNamespace
+from unittest.mock import patch
 
 import cv2
 import numpy as np
 
 from automation import Stopped
-from nte_auction import AuctionBackend, AuctionController, AuctionReader, AuctionScene, Box, USE_LABELS, BID_AMOUNT
+from nte_auction import AuctionBackend, AuctionController, AuctionReader, AuctionScene, Box, USE_LABELS, BID_AMOUNT, OCR_REGIONS
 
 
 def word(text, x, y, w=160, h=30, confidence=0.99):
@@ -56,7 +57,7 @@ class ReaderTests(unittest.TestCase):
         self.assertEqual(self.reader.from_rows(self.game()[1:], self.frame).page, 'unknown')
 
     def test_average_does_not_use_assets_estimate_or_malformed_numbers(self):
-        for value in ('350,001', '350000', '0', '123,456,789'):
+        for value in ('500,001', '500000', '0', '123,456,789'):
             self.assertEqual(self.reader.from_rows(self.game(value), self.frame).average, int(value.replace(',', '')))
         for value in ('', '-3626', '3,62', '3,626.5', 'O,626'):
             with self.subTest(value=value):
@@ -119,11 +120,15 @@ class ReaderTests(unittest.TestCase):
         self.assertEqual(self.reader.from_rows([row for row in rows if row[1] != '跳过动画'], self.frame).page, 'result')
         self.assertEqual(self.reader.from_rows([row for row in rows if row[1] != '实际价值'], self.frame).page, 'unknown')
 
-    def test_home_requires_both_auction_title_and_start_button(self):
+    def test_home_only_requires_top_left_auction_title(self):
         rows = [word('即刻落槌', 150, 60), word('至尊仪器组', 1680, 1050), word('开始匹配', 1950, 1320)]
         scene = self.reader.from_rows(rows, self.frame)
         self.assertEqual(scene.page, 'home')
         self.assertEqual(scene.group.center, (1760, 1065))
+        title_only = self.reader.from_rows(rows[:1], self.frame)
+        self.assertEqual(title_only.page, 'home')
+        self.assertIsNone(title_only.group)
+        self.assertIsNone(title_only.start)
         self.assertEqual(self.reader.from_rows(rows[1:], self.frame).page, 'unknown')
         rows[-1] = word('开始拍卖', 1950, 1320)
         self.assertEqual(self.reader.from_rows(rows, self.frame).page, 'home')
@@ -194,6 +199,88 @@ class ReaderTests(unittest.TestCase):
         self.assertEqual(self.reader.from_rows([word('100%', 2380, 700, h=40)], self.frame).page, 'unknown')
         self.frame[:] = 180
         self.assertEqual(self.reader.from_rows([word('100%', 2380, 1340, h=40)], self.frame).page, 'unknown')
+
+
+class RegionalOCRTests(unittest.TestCase):
+    setUp = ReaderTests.setUp
+    game = ReaderTests.game
+    keypad = ReaderTests.keypad
+    def projected_ocr(self, rows, regions):
+        calls = []
+        def ocr(image, **kwargs):
+            calls.append((image.shape, kwargs))
+            if image.shape == self.frame.shape:
+                return rows, None
+            mapped, offset = [], 0
+            canvas_width = max(int(right * 2559) - int(left * 2559) for left, _, right, _ in regions)
+            canvas_height = sum(int(bottom * 1439) - int(top * 1439) + 24 for _, top, _, bottom in regions) - 24
+            scale_x, scale_y = image.shape[1] / canvas_width, image.shape[0] / canvas_height
+            for left, top, right, bottom in regions:
+                x, y, r, b = int(left * 2559), int(top * 1439), int(right * 2559), int(bottom * 1439)
+                for points, text, confidence in rows:
+                    if all(x <= px < r and y <= py < b for px, py in points):
+                        mapped.append(([[(px-x) * scale_x, (py-y+offset) * scale_y] for px, py in points], text, confidence))
+                offset += b-y+24
+            return mapped, None
+        return AuctionReader(SimpleNamespace(cv=cv2, ocr=ocr)), calls
+
+    def test_home_ocr_reads_only_title_area_in_one_call(self):
+        reader, calls = self.projected_ocr([word('即刻落槌', 150, 60)], OCR_REGIONS['home'])
+        scene = reader.inspect(self.frame, 'home')
+        self.assertEqual(scene.page, 'home')
+        self.assertIsNone(scene.group)
+        self.assertEqual(len(calls), 1)
+        self.assertLess(calls[0][0][0] * calls[0][0][1], 2559 * 1439 * .061)
+        self.assertEqual(calls[0][1], {'use_cls': False})
+
+    def test_wrong_home_never_falls_back_to_full_screen(self):
+        reader, calls = self.projected_ocr(self.game(), OCR_REGIONS['home'])
+        self.assertEqual(reader.inspect(self.frame, 'home').page, 'unknown')
+        self.assertEqual(len(calls), 1)
+
+    def test_packed_game_regions_preserve_amount_and_original_coordinates(self):
+        reader, calls = self.projected_ocr(self.game('500,001'), OCR_REGIONS['read_average'])
+        scene = reader.inspect(self.frame, 'read_average')
+        self.assertEqual((scene.page, scene.average), ('game', 500001))
+        self.assertAlmostEqual(scene.bid.center[0], 2347.5)
+        self.assertAlmostEqual(scene.bid.center[1], 1335)
+        self.assertAlmostEqual(scene.instrument.center[0], 527.5)
+        self.assertAlmostEqual(scene.instrument.center[1], 1335)
+        self.assertIsNotNone(scene.exit)
+        self.assertEqual(len(calls), 1)
+
+    def test_keypad_region_does_not_confuse_assets_with_current_bid(self):
+        reader, calls = self.projected_ocr(self.keypad('5,000,000'), OCR_REGIONS['bid_fill'])
+        scene = reader.inspect(self.frame, 'bid_fill')
+        self.assertEqual((scene.page, scene.bid_amount), ('bid_input', BID_AMOUNT))
+        self.assertAlmostEqual(scene.keys['5'].center[0], 830)
+        self.assertAlmostEqual(scene.keys['5'].center[1], 960)
+        self.assertEqual(len(calls), 1)
+
+    def test_unknown_regions_throttle_full_scan_without_reusing_a_scene(self):
+        reader, calls = self.projected_ocr([], OCR_REGIONS['read_average'])
+        with patch('nte_auction.time.monotonic', side_effect=(10, 10.1, 12.1)):
+            for _ in range(3):
+                self.assertEqual(reader.inspect(self.frame, 'read_average').page, 'unknown')
+        self.assertEqual([shape == self.frame.shape for shape, _ in calls], [False, True, False, False, True])
+
+    def test_recovery_value_is_not_reused_when_next_frame_is_unrecognized(self):
+        reader = AuctionReader(SimpleNamespace(cv=cv2, ocr=lambda image, **kwargs: (self.game('500,001'), None)))
+        with patch.object(reader, 'region_rows', return_value=[]), patch('nte_auction.time.monotonic', side_effect=(10, 10.1)):
+            self.assertEqual(reader.inspect(self.frame, 'read_average').average, 500001)
+            next_scene = reader.inspect(self.frame, 'read_average')
+        self.assertEqual(next_scene.page, 'unknown')
+        self.assertIsNone(next_scene.average)
+
+    def test_boxes_crossing_packed_padding_cannot_authorize_buttons(self):
+        reader = AuctionReader(SimpleNamespace(cv=cv2, ocr=lambda image, **kwargs:
+                               ([word('出价', 60, 280, w=60, h=40)], None)))
+        self.assertEqual(reader.region_rows(self.frame, ((0, 0, .3, .2), (0, .3, .3, .5))), [])
+
+    def test_text_touching_crop_edge_is_discarded_instead_of_reading_partial_amount(self):
+        reader = AuctionReader(SimpleNamespace(cv=cv2, ocr=lambda image, **kwargs:
+                               ([word('500000', image.shape[1] - 105, 100, w=100)], None)))
+        self.assertEqual(reader.region_rows(self.frame, OCR_REGIONS['bid_fill']), [])
 
 
 class FakeAuction:
@@ -456,7 +543,7 @@ class FlowTests(unittest.TestCase):
         self.assertEqual(backend.actions, ['open'])
 
     def test_strict_threshold_equal_or_lower_exits_without_bidding(self):
-        for value in (0, 3626, 349999, 350000):
+        for value in (0, 3626, 499999, 500000):
             with self.subTest(value=value):
                 backend = FakeAuction()
                 backend.average = value
@@ -468,7 +555,7 @@ class FlowTests(unittest.TestCase):
 
     def test_above_threshold_bids_exactly_once_then_waits_until_cancel(self):
         backend = FakeAuction()
-        backend.average = 350001
+        backend.average = 500001
         backend.result_available = False
         controller = self.controller(backend)
         reports = []
@@ -479,11 +566,11 @@ class FlowTests(unittest.TestCase):
         self.assertEqual(backend.actions.count('bid_submit'), 1)
         self.assertEqual(backend.actions.count('bid_confirm'), 1)
         self.assertNotIn('exit', backend.actions)
-        self.assertEqual((reports[-1]['phase'], reports[-1]['auction_average']), ('等待竞拍结果', 350001))
+        self.assertEqual((reports[-1]['phase'], reports[-1]['auction_average']), ('等待竞拍结果', 500001))
 
     def test_wrong_secondary_confirmation_amount_is_never_approved(self):
         backend = FakeAuction()
-        backend.average = 500000
+        backend.average = 500001
         backend.confirm_amount = 6666666
         with self.assertRaisesRegex(Stopped, 'F8'):
             self.controller(backend).run()
@@ -492,7 +579,7 @@ class FlowTests(unittest.TestCase):
 
     def test_no_warning_returns_to_game_without_repeating_bid(self):
         backend = FakeAuction()
-        backend.average = 500000
+        backend.average = 500001
         original = backend.click_checked
         def click(scene, action='select'):
             original(scene, action)
@@ -506,7 +593,7 @@ class FlowTests(unittest.TestCase):
 
     def test_wrong_keypad_amount_prevents_submit(self):
         backend = FakeAuction()
-        backend.average = 500000
+        backend.average = 500001
         def fill():
             backend.actions.append('fill_bid')
             backend.bid_amount = 50000000
@@ -566,7 +653,7 @@ class FlowTests(unittest.TestCase):
 
     def test_winning_bid_skips_then_exits_and_restarts_three_cycles(self):
         backend = FakeAuction()
-        backend.average = 350001
+        backend.average = 500001
         controller = self.controller(backend, stop_after_cycles=3)
         with self.assertRaisesRegex(Stopped, 'F8'):
             controller.run()
@@ -579,7 +666,7 @@ class FlowTests(unittest.TestCase):
     def test_next_cycle_reads_its_own_value_instead_of_reusing_high_average(self):
         backend = FakeAuction()
         original = backend.click_checked
-        values = iter((350001, 0))
+        values = iter((500001, 0))
         def click(scene, action='select'):
             original(scene, action)
             if action == 'open':
@@ -595,7 +682,7 @@ class FlowTests(unittest.TestCase):
 
     def test_result_without_skip_exits_without_clicking_another_button(self):
         backend = FakeAuction()
-        backend.average = 350001
+        backend.average = 500001
         original = backend.observe
         def observe():
             scene = original()
@@ -623,7 +710,7 @@ class FlowTests(unittest.TestCase):
 
     def test_cancel_after_skip_prevents_settlement_exit_and_new_game(self):
         backend = FakeAuction()
-        backend.average = 350001
+        backend.average = 500001
         controller = self.controller(backend)
         original = backend.click_checked
         def click(scene, action='select'):
@@ -718,6 +805,26 @@ class ClickTests(unittest.TestCase):
         backend.cursor_position = lambda: SimpleNamespace(point=box.center)
         backend.click_checked(scene, 'start')
         self.assertEqual(clicks, ['click'])
+
+    def test_title_only_home_locates_button_fresh_before_moving(self):
+        backend = AuctionBackend.__new__(AuctionBackend)
+        actions = []
+        box = Box(1800, 1050, 160, 30)
+        backend.observe = lambda: (actions.append('observe') or AuctionScene('home', group=box))
+        backend.move_verified = lambda *args: actions.append('move')
+        backend.confirm_pointer = lambda *args: actions.append('pointer')
+        backend.guard = lambda: None
+        backend.mouse = SimpleNamespace(click=lambda: actions.append('click'))
+        backend.click_checked(AuctionScene('home'), 'open')
+        self.assertEqual(actions, ['observe', 'move', 'observe', 'pointer', 'click'])
+
+    def test_title_only_without_unique_button_never_moves_or_clicks(self):
+        backend = AuctionBackend.__new__(AuctionBackend)
+        backend.observe = lambda: AuctionScene('home')
+        backend.move_verified = lambda *args: self.fail('must not move')
+        backend.mouse = SimpleNamespace(click=lambda: self.fail('must not click'))
+        with self.assertRaisesRegex(ValueError, '没有唯一'):
+            backend.click_checked(AuctionScene('home'), 'start')
 
     def test_pointer_moved_during_ocr_prevents_click(self):
         backend = AuctionBackend.__new__(AuctionBackend)

@@ -1,17 +1,42 @@
 """Auction entry, loading observation, and nine-cell average instrument use."""
 from dataclasses import dataclass
 import re
+import time
 import unicodedata
+
+import numpy as np
 
 from automation import Stopped
 from nte_workflow import Controller, DesktopBackend, REFERENCE
 
 TARGET = '至尊仪器组'
 AVERAGE_INSTRUMENT = '九格均价仪器'
-BID_THRESHOLD = 350000
+BID_THRESHOLD = 500000
 BID_AMOUNT = 5000000
 USE_LABELS = ('购买并使用', '使用', '一键补齐', '一键补全')
 START_LABELS = ('开始匹配', '开始拍卖')
+
+# Fractions of the game content area, never desktop coordinates. Separate
+# patches are packed for one OCR invocation; returned boxes map back to the
+# original reference frame before scene parsing or mouse coordinate conversion.
+HOME_REGIONS = ((0, 0, .30, .20),)
+RETURN_REGIONS = HOME_REGIONS + ((.70, .82, 1, 1),)
+PREP_REGIONS = ((.18, .04, .86, .97),)
+LIST_REGIONS = ((.26, .02, .76, .97),)
+GAME_REGIONS = ((.24, 0, .80, .84), (0, 0, .08, .15), (.08, .85, .35, 1), (.70, .85, 1, 1))
+KEYPAD_REGIONS = ((.18, .45, .82, .97),)
+DIALOG_REGIONS = ((.08, 0, .99, .85), (.05, .85, .99, 1))
+RESULT_REGIONS = ((.03, .09, .42, .32), (.04, .38, .65, .60), (.67, .85, .99, 1))
+OCR_REGIONS = {
+    **dict.fromkeys(('home', 'cursor'), HOME_REGIONS),
+    **dict.fromkeys(('returning', 'returning_home'), RETURN_REGIONS),
+    **dict.fromkeys(('opening', 'search', 'confirm', 'instruments'), PREP_REGIONS),
+    **dict.fromkeys(('game_opening', 'game_search', 'game_selected', 'instrument_list'), LIST_REGIONS),
+    **dict.fromkeys(('await_loading', 'loading', 'read_average', 'game'), GAME_REGIONS),
+    **dict.fromkeys(('bid_opening', 'bid_fill', 'bid_verify', 'bid_input'), KEYPAD_REGIONS),
+    **dict.fromkeys(('matching', 'exiting', 'bid_submitted', 'entry_confirm', 'exit_confirm', 'bid_confirm'), DIALOG_REGIONS),
+    **dict.fromkeys(('waiting_result', 'result_skipped', 'result'), RESULT_REGIONS),
+}
 
 
 def compact(text):
@@ -68,11 +93,51 @@ class AuctionScene:
 class AuctionReader:
     def __init__(self, reader):
         self.reader, self.cv = reader, reader.cv
+        self.next_full_scan = {}
 
-    def inspect(self, frame):
+    def inspect(self, frame, stage='auto'):
         frame = self.cv.resize(frame, REFERENCE)
-        rows, _ = self.reader.ocr(frame)
+        regions = OCR_REGIONS.get(stage)
+        if regions is None:
+            rows, _ = self.reader.ocr(frame, use_cls=False)
+            return self.from_rows(rows or [], frame)
+        scene = self.from_rows(self.region_rows(frame, regions), frame)
+        # Home confirmation deliberately reads only the top-left title. A full
+        # fresh scan locates actual buttons immediately before a home action.
+        missing_value = stage == 'read_average' and scene.page == 'game' and scene.average is None
+        if (scene.page != 'unknown' and not missing_value) or stage in ('home', 'cursor'):
+            return scene
+        now = time.monotonic()
+        if now < self.next_full_scan.get(stage, 0):
+            return scene
+        self.next_full_scan[stage] = now + 2
+        rows, _ = self.reader.ocr(frame, use_cls=False)
         return self.from_rows(rows or [], frame)
+
+    def region_rows(self, frame, regions):
+        patches, packed_height = [], 0
+        for left, top, right, bottom in regions:
+            x, y, r, b = int(left * frame.shape[1]), int(top * frame.shape[0]), int(right * frame.shape[1]), int(bottom * frame.shape[0])
+            patch = frame[y:b, x:r]
+            patches.append((patch, x, y, packed_height))
+            packed_height += patch.shape[0] + 24
+        canvas = np.zeros((packed_height - 24, max(p[0].shape[1] for p in patches), 3), dtype=frame.dtype)
+        for patch, _, _, offset in patches:
+            canvas[offset:offset + patch.shape[0], :patch.shape[1]] = patch
+        scale = min(1, 1280 / max(canvas.shape[:2]))
+        ocr_canvas = self.cv.resize(canvas, (round(canvas.shape[1] * scale), round(canvas.shape[0] * scale))) if scale < 1 else canvas
+        scale_x, scale_y = ocr_canvas.shape[1] / canvas.shape[1], ocr_canvas.shape[0] / canvas.shape[0]
+        rows, _ = self.reader.ocr(ocr_canvas, use_cls=False)
+        mapped = []
+        for points, text, confidence in rows or []:
+            points = [[px / scale_x, py / scale_y] for px, py in points]
+            for patch, x, y, offset in patches:
+                # Text touching a crop edge may be a truncated number. It must
+                # never become a smaller valid amount or a partial button label.
+                if all(16 <= px < patch.shape[1] - 16 and offset + 16 <= py < offset + patch.shape[0] - 16 for px, py in points):
+                    mapped.append(([[px + x, py - offset + y] for px, py in points], text, confidence))
+                    break
+        return mapped
 
     def from_rows(self, rows, frame):
         words = []
@@ -115,7 +180,7 @@ class AuctionReader:
                 if confirm.y > body_bottom and cancel.y > body_bottom and confirm.x > cancel.x and abs(confirm.center[1] - cancel.center[1]) < max(confirm.height, cancel.height):
                     return AuctionScene('entry_confirm', confirm=confirm, frame=frame)
             return AuctionScene('unknown')
-        if (confirms or cancels) and any(text == '提示' for text, _ in words):
+        if (confirms and cancels) or ((confirms or cancels) and any(text == '提示' for text, _ in words)):
             return AuctionScene('unknown')
         result_titles = [box for text, box in words if text == '竞拍结束' and box.center[0] < width * 0.4
                          and box.center[1] < height * 0.3]
@@ -196,8 +261,9 @@ class AuctionReader:
         home_title = any(text == '即刻落槌' and box.center[0] < width * 0.3 and box.center[1] < height * 0.2 for text, box in words)
         start = [box for text, box in words if text in START_LABELS and box.center[0] > width * 0.55 and box.center[1] > height * 0.65]
         groups = [box for text, box in words if re.fullmatch(r'(?:初级|中级|高级|至尊)\S{0,8}仪器组', text) and box.center[0] > width * 0.55 and height * 0.60 < box.center[1] < height * 0.88]
-        if home_title and len(start) == 1 and len(groups) == 1 and groups[0].y < start[0].y:
-            return AuctionScene('home', group=groups[0], frame=frame, start=start[0])
+        if home_title:
+            return AuctionScene('home', group=groups[0] if len(groups) == 1 else None,
+                                frame=frame, start=start[0] if len(start) == 1 else None)
         return AuctionScene('unknown')
 
     def bid_keypad(self, words, frame):
@@ -329,7 +395,7 @@ class AuctionBackend(DesktopBackend):
         self.list_stable = 0
 
     def observe(self):
-        return self.auction_reader.inspect(self.frame())
+        return self.auction_reader.inspect(self.frame(), getattr(self, 'ocr_stage', 'auto'))
 
     def confirm_pointer(self, point):
         target = self.point(*point)
@@ -348,6 +414,16 @@ class AuctionBackend(DesktopBackend):
                   'bid_open': '出价按钮', 'exit': '左上退出图标', 'bid_submit': '确认出价按钮', 'bid_confirm': '五百万出价确认按钮',
                   'exit_confirm': '放弃本局竞拍确认按钮', 'skip': '跳过动画按钮', 'result_exit': '结算退出按钮'}
         target = getattr(scene, targets[action])
+        self.ocr_stage = {'open': 'auto', 'start': 'auto', 'game_open': 'game',
+                          'average_select': 'instrument_list', 'average_use': 'instrument_list',
+                          'bid_open': 'game', 'exit': 'game', 'bid_submit': 'bid_input',
+                          'confirm': 'entry_confirm', 'bid_confirm': 'bid_confirm',
+                          'exit_confirm': 'exit_confirm', 'skip': 'result', 'result_exit': 'result'}.get(action, 'instruments')
+        if target is None and action in ('open', 'start'):
+            scene = self.observe()
+            if scene.page != 'home':
+                raise ValueError('操作前未确认初始界面，暂停点击')
+            target = getattr(scene, targets[action])
         if target is None:
             raise ValueError('没有唯一操作按钮位置，暂停点击')
         self.move_verified(*target.center, '移动到' + labels[action])
@@ -369,6 +445,7 @@ class AuctionBackend(DesktopBackend):
 
     def fill_bid(self):
         # Use the game's visible keypad, with a fresh amount check after each key.
+        self.ocr_stage = 'bid_fill'
         for label, expected in (('clear', None), ('5', 5), ('00', 500), ('0000', BID_AMOUNT)):
             scene = self.observe()
             if scene.page != 'bid_input' or not scene.keys or label not in scene.keys:
@@ -391,6 +468,7 @@ class AuctionBackend(DesktopBackend):
     def scroll_groups(self, scene):
         if scene.page not in ('instruments', 'instrument_list') or scene.listing is None:
             raise ValueError('未定位左侧仪器组列表，暂停滚动')
+        self.ocr_stage = scene.page
         self.move_verified(*scene.listing.center, '移动到左侧仪器组列表')
         fresh = self.observe()
         if fresh.page != scene.page or fresh.listing is None or max(abs(a-b) for a, b in zip(fresh.listing.center, scene.listing.center)) > 16:
@@ -420,11 +498,10 @@ class AuctionController(Controller):
     def run(self):
         self.average = None
         self.publish('确认即刻落槌初始界面')
-        for _ in range(self.c['confirm_frames']):
-            self.check()
-            if self.b.observe().page != 'home':
-                raise Stopped('界面错误：请从即刻落槌初始界面开始')
-            self.wait(self.c['scan_interval'])
+        self.b.ocr_stage = 'home'
+        self.check()
+        if self.b.observe().page != 'home':
+            raise Stopped('界面错误：请从即刻落槌初始界面开始')
         state = 'cursor'
         cursor_frames = dialog_frames = selected_frames = 0
         value_frames, last_value = 0, None
@@ -433,6 +510,7 @@ class AuctionController(Controller):
         while True:
             self.check()
             try:
+                self.b.ocr_stage = state
                 scene = self.b.observe()
                 self.check()
                 if scene.page != previous_page:
@@ -563,11 +641,11 @@ class AuctionController(Controller):
                             self.message(f'已连续确认九格藏品平均价值：{self.average:,}')
                             if self.average > BID_THRESHOLD:
                                 self.b.click_checked(scene, 'bid_open')
-                                self.message('均价超过 350,000，已点击右下出价，等待数字键盘')
+                                self.message('均价超过 500,000，已点击右下出价，等待数字键盘')
                                 state = 'bid_opening'
                             else:
                                 self.b.click_checked(scene, 'exit')
-                                self.message('均价未超过 350,000，已点击左上退出图标，等待退出画面')
+                                self.message('均价未超过 500,000，已点击左上退出图标，等待退出画面')
                                 state = 'exiting'
                             dialog_frames = 0
                 elif state == 'bid_opening':

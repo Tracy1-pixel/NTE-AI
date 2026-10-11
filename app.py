@@ -73,9 +73,32 @@ def self_test(report):
         if sys.platform == 'win32':
             from PIL import ImageDraw, ImageFont
             from nte_auction import AuctionReader
+            def local_scene(image, stage):
+                auction_reader = AuctionReader(reader)
+                scene = auction_reader.inspect(cv2.cvtColor(np.array(image), cv2.COLOR_RGB2BGR), stage)
+                if auction_reader.next_full_scan:
+                    raise RuntimeError(f'局部 OCR 未独立识别生成画面：{stage}')
+                return scene
             font_path = Path(os.environ.get('WINDIR', r'C:\Windows')) / 'Fonts' / 'msyh.ttc'
             font = ImageFont.truetype(str(font_path), 36)
             small_font = ImageFont.truetype(str(font_path), 28)
+            home = Image.new('RGB', (1920, 1080), '#172132')
+            ImageDraw.Draw(home).text((120, 45), '即刻落槌', font=font, fill='white')
+            home_scene = local_scene(home, 'home')
+            if home_scene.page != 'home' or home_scene.group is not None or home_scene.start is not None:
+                raise RuntimeError('初始界面左上标题局部 OCR 自检失败')
+            for stage, expected, labels in (
+                ('search', 'instruments', (((559, 165), '仪器组合'), ((878, 240), '内含下列仪器'),
+                                           ((559, 278), '初级泛用仪器组'), ((559, 600), '至尊仪器组'), ((945, 765), '使用'))),
+                ('game_search', 'instrument_list', (((649, 112), '仪器列表'), ((772, 232), '至尊鉴定仪器'),
+                                                    ((772, 742), '九格均价仪器'), ((930, 900), '使用')))):
+                panel = Image.new('RGB', (1920, 1080), '#172132')
+                panel_drawing = ImageDraw.Draw(panel)
+                for position, text in labels:
+                    panel_drawing.text(position, text, font=font, fill='white')
+                panel_scene = local_scene(panel, stage)
+                if panel_scene.page != expected or panel_scene.target is None:
+                    raise RuntimeError(f'仪器列表局部 OCR 自检失败：{stage} / {panel_scene.page}')
             sample = Image.new('RGB', (1920, 1080), '#172132')
             drawing = ImageDraw.Draw(sample)
             for position, text in (((385, 980), '仪器'), ((1720, 980), '出价'),
@@ -83,7 +106,7 @@ def self_test(report):
                 drawing.text(position, text, font=font, fill='white')
             drawing.text((780, 540), '本局内九格藏品的平均价值为3,626。', font=small_font, fill='white')
             drawing.text((1450, 70), '我的资产 27,304,476', font=small_font, fill='white')
-            scene = AuctionReader(reader).inspect(cv2.cvtColor(np.array(sample), cv2.COLOR_RGB2BGR))
+            scene = local_scene(sample, 'read_average')
             if scene.page != 'game' or scene.average != 3626:
                 raise RuntimeError(f'生成的竞拍画面均价 OCR 自检失败：{scene.page} / {scene.average}')
             keypad = Image.new('RGB', (1920, 1080), '#172132')
@@ -95,7 +118,7 @@ def self_test(report):
             for position, text in (((1200, 620), '请输入你愿意出的价格'), ((1200, 665), '推荐出价参考：800,000'),
                                    ((1160, 750), '5,000,000'), ((1220, 945), '确认出价')):
                 drawing.text(position, text, font=font, fill='white')
-            scene = AuctionReader(reader).inspect(cv2.cvtColor(np.array(keypad), cv2.COLOR_RGB2BGR))
+            scene = local_scene(keypad, 'bid_fill')
             if scene.page != 'bid_input' or scene.bid_amount != 5000000 or set(scene.keys or {}) != {'5', '00', '0000', 'clear'}:
                 raise RuntimeError(f'生成的出价键盘 OCR 自检失败：{scene.page} / {scene.bid_amount}')
             for expected, labels in (
@@ -108,7 +131,7 @@ def self_test(report):
                 drawing = ImageDraw.Draw(sample)
                 for position, text in labels:
                     drawing.text(position, text, font=small_font if len(text) > 25 else font, fill='white')
-                scene = AuctionReader(reader).inspect(cv2.cvtColor(np.array(sample), cv2.COLOR_RGB2BGR))
+                scene = local_scene(sample, expected)
                 if scene.page != expected:
                     raise RuntimeError(f'生成的竞拍返回界面 OCR 自检失败：{expected} / {scene.page}')
         import tkinter as tk
@@ -293,7 +316,7 @@ def self_test(report):
             area = api.geometry(int(api.u.GetAncestor(root.winfo_id(), 2)))
             pyautogui.screenshot(region=area.region()).save(str(Path(report).with_suffix('.png')))
         app.close()
-        data = {'status': 'passed', 'score': 1900, 'gui': 'passed', 'auction_controls': 'passed', 'auction_average_ocr': 'passed', 'auction_bid_ocr': 'passed', 'auction_return_ocr': 'passed', 'f8_global': 'passed', 'f8_polling': 'passed', 'f8_gui_restore': 'passed', 'progression_controls': 'passed', 'level_ocr': 'passed', 'star_anchors': 'passed', 'cursor_capture': 'passed', 'mouse_input': 'passed', 'stop_button': 'passed', 'overlay': 'passed', 'window_geometry': 'passed', 'frozen': bool(getattr(sys, 'frozen', False))}
+        data = {'status': 'passed', 'score': 1900, 'gui': 'passed', 'auction_controls': 'passed', 'auction_regional_ocr': 'passed', 'auction_average_ocr': 'passed', 'auction_bid_ocr': 'passed', 'auction_return_ocr': 'passed', 'f8_global': 'passed', 'f8_polling': 'passed', 'f8_gui_restore': 'passed', 'progression_controls': 'passed', 'level_ocr': 'passed', 'star_anchors': 'passed', 'cursor_capture': 'passed', 'mouse_input': 'passed', 'stop_button': 'passed', 'overlay': 'passed', 'window_geometry': 'passed', 'frozen': bool(getattr(sys, 'frozen', False))}
         code = 0
     except Exception as error:
         data, code = {'status': 'failed', 'error': str(error)}, 1
@@ -312,7 +335,7 @@ class App:
         self.feature = 'pianist'
         self.runtime = RuntimeStatus()
         self.overlay = None
-        root.title('异环助手 · 店长特供 1.1.18')
+        root.title('异环助手 · 店长特供 1.1.19')
         root.geometry('980x820')
         root.minsize(920, 760)
         root.configure(bg='#0b1220')
@@ -352,7 +375,7 @@ class App:
             button = ttk.Button(sidebar, text=label, style='Accent.TButton' if key == 'pianist' else 'TButton', command=lambda feature=key: self.select_feature(feature))
             button.pack(fill='x', pady=5)
             self.feature_buttons[key] = button
-        tk.Label(sidebar, text='当前游戏窗口\n自动读取尺寸\n\nv1.1.18', bg='#101b31', fg='#61738d', justify='left', font=('Segoe UI', 10), anchor='sw').pack(side='bottom', fill='x')
+        tk.Label(sidebar, text='当前游戏窗口\n自动读取尺寸\n\nv1.1.19', bg='#101b31', fg='#61738d', justify='left', font=('Segoe UI', 10), anchor='sw').pack(side='bottom', fill='x')
 
         outer = ttk.Frame(root, padding=(24, 22))
         outer.pack(fill='both', expand=True)
@@ -469,7 +492,7 @@ class App:
         self.feature = feature
         label = '即刻落槌' if feature == 'auction' else '店长特供'
         self.heading.set(label)
-        self.root.title(f'异环助手 · {label} 1.1.18')
+        self.root.title(f'异环助手 · {label} 1.1.19')
         for key, button in self.feature_buttons.items():
             button.configure(style='Accent.TButton' if key == feature else 'TButton')
         self.update_mode()
@@ -486,7 +509,7 @@ class App:
             self.level_list.configure(state='disabled')
             if not self.busy:
                 self.subtitle.set('竞拍自动操作  /  从初始界面开始')
-            self.summary.set('使用九格均价仪器；均价 > 350,000 出价 5,000,000，否则退出；结算 / 退出回到初始界面后自动循环。')
+            self.summary.set('使用九格均价仪器；均价 > 500,000 出价 5,000,000，否则退出；结算 / 退出回到初始界面后自动循环。')
             return
         for widget in self.mode_widgets:
             widget.grid()
@@ -623,9 +646,9 @@ class App:
                 emit('检查不会点击或改变窗口尺寸。开始运行必须是所选栏目对应的初始界面。')
             else:
                 if auction:
-                    emit('版本 1.1.18：即刻落槌；均价 > 350,000 出价 5,000,000，否则确认退出；结算或退出回到初始界面后自动循环，F8 停止。')
+                    emit('版本 1.1.19：即刻落槌；均价 > 500,000 出价 5,000,000，否则确认退出；结算或退出回到初始界面后自动循环，F8 停止。')
                 else:
-                    emit(f'版本 1.1.18：{workflow.MODES[config["mode"]]}；开始关卡 {config["start_level"] if config["mode"] == "progression" else "3-10"}；滚动间隔 {config["scroll_interval"]} 秒。')
+                    emit(f'版本 1.1.19：{workflow.MODES[config["mode"]]}；开始关卡 {config["start_level"] if config["mode"] == "progression" else "3-10"}；滚动间隔 {config["scroll_interval"]} 秒。')
                 controller = AuctionController if auction else workflow.Controller
                 controller(config, desktop, self.stop, log=emit, report=lambda data: self.events.put(('runtime', data))).run()
         except engine.Stopped as error:
