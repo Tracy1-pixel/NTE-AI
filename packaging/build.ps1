@@ -1,4 +1,4 @@
-param([string]$Version = "1.1.11")
+param([string]$Version = "1.1.12")
 $ErrorActionPreference = "Stop"
 Set-Location (Split-Path $PSScriptRoot -Parent)
 python -m PyInstaller --noconfirm --clean --windowed --uac-admin --onedir --name NTE-AI --add-data "assets;assets" --collect-all rapidocr_onnxruntime --collect-all onnxruntime --collect-all pyautogui --collect-all pynput app.py 2>&1 | Tee-Object -FilePath pyinstaller-build.log
