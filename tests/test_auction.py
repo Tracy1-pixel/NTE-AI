@@ -100,6 +100,25 @@ class ReaderTests(unittest.TestCase):
         rows = self.game() + [word('提示', 1150, 300), word('确认', 1450, 750), word('取消', 900, 750)]
         self.assertEqual(self.reader.from_rows(rows, self.frame).page, 'unknown')
 
+    def test_exit_confirmation_requires_forfeit_and_fee_message(self):
+        rows = [word('确认退出', 1150, 300),
+                word('是否退出当前竞拍会场？退出将视为放弃竞拍，且不返还本局入场费。', 610, 520, w=1400),
+                word('取消', 900, 750), word('确认', 1450, 750)]
+        self.assertEqual(self.reader.from_rows(rows, self.frame).page, 'exit_confirm')
+        rows[1] = word('是否退出游戏？', 610, 520)
+        self.assertEqual(self.reader.from_rows(rows, self.frame).page, 'unknown')
+
+    def test_settlement_anchors_include_actual_labels_and_timed_exit(self):
+        rows = [word('竞拍结束', 100, 200, w=300, h=65), word('最终成交价', 170, 620),
+                word('实际价值', 670, 620), word('收益', 1170, 620),
+                word('跳过动画', 1890, 1320), word('退出（103s）', 2250, 1320, w=200)]
+        scene = self.reader.from_rows(rows, self.frame)
+        self.assertEqual(scene.page, 'result')
+        self.assertIsNotNone(scene.skip)
+        self.assertIsNotNone(scene.result_exit)
+        self.assertEqual(self.reader.from_rows([row for row in rows if row[1] != '跳过动画'], self.frame).page, 'result')
+        self.assertEqual(self.reader.from_rows([row for row in rows if row[1] != '实际价值'], self.frame).page, 'unknown')
+
     def test_home_requires_both_auction_title_and_start_button(self):
         rows = [word('即刻落槌', 150, 60), word('至尊仪器组', 1680, 1050), word('开始匹配', 1950, 1320)]
         scene = self.reader.from_rows(rows, self.frame)
@@ -190,12 +209,24 @@ class FakeAuction:
         self.average_used = False
         self.bid_amount = None
         self.confirm_amount = BID_AMOUNT
+        self.result_available = True
+        self.bid_won = False
+        self.return_reads = 0
 
     def observe(self):
         if self.page == 'home':
             return AuctionScene('home', group=self.point, start=self.point)
         if self.page == 'entry_confirm':
             return AuctionScene('entry_confirm', confirm=self.point)
+        if self.page == 'exit_confirm':
+            return AuctionScene('exit_confirm', confirm=self.point)
+        if self.page == 'result':
+            return AuctionScene('result', skip=self.point, result_exit=self.point)
+        if self.page == 'loading_home':
+            self.return_reads += 1
+            if self.return_reads <= 3:
+                return AuctionScene('loading', progress=100)
+            return AuctionScene('home', group=self.point, start=self.point)
         if self.page == 'loading':
             self.loading_reads += 1
             if self.loading_reads <= 3:
@@ -203,6 +234,8 @@ class FakeAuction:
             return AuctionScene('game', instrument=self.point, exit=self.point, bid=self.point,
                                 average=self.average if self.average_used else None)
         if self.page == 'game':
+            if self.bid_won and self.result_available:
+                return AuctionScene('result', skip=self.point, result_exit=self.point)
             return AuctionScene('game', instrument=self.point, exit=self.point, bid=self.point,
                                 average=self.average if self.average_used else None)
         if self.page == 'instrument_list':
@@ -223,6 +256,10 @@ class FakeAuction:
         self.actions.append(action)
         if action == 'open':
             self.page = 'instruments'
+            self.average_used = False
+            self.bid_won = False
+            self.loading_reads = 0
+            self.return_reads = 0
         elif action == 'select':
             self.selected = True
         elif action == 'use':
@@ -237,13 +274,16 @@ class FakeAuction:
             self.average_used = True
             self.page = 'game'
         elif action == 'exit':
-            self.page = 'home'
+            self.page = 'exit_confirm'
+        elif action in ('exit_confirm', 'result_exit'):
+            self.page = 'loading_home'
         elif action == 'bid_open':
             self.page = 'bid_input'
         elif action == 'bid_submit':
             self.page = 'bid_confirm'
         elif action == 'bid_confirm':
             self.page = 'game'
+            self.bid_won = True
 
     def fill_bid(self):
         self.actions.append('fill_bid')
@@ -256,15 +296,16 @@ class FakeAuction:
 
 
 class FlowTests(unittest.TestCase):
-    def controller(self, backend):
+    def controller(self, backend, stop_after_cycles=1):
         now = [0.0]
         stop = threading.Event()
         def sleep(seconds):
             now[0] += seconds
-            if now[0] > 12:
+            if now[0] > 12 or controller.completed >= stop_after_cycles:
                 stop.set()
-        return AuctionController({'scan_interval': 0.05, 'confirm_frames': 2}, backend, stop,
-                                 clock=lambda: now[0], sleep=sleep, log=lambda _: None)
+        controller = AuctionController({'scan_interval': 0.05, 'confirm_frames': 2}, backend, stop,
+                                       clock=lambda: now[0], sleep=sleep, log=lambda _: None)
+        return controller
 
     def test_three_footer_variants_return_then_start_and_confirm_once(self):
         for label in USE_LABELS:
@@ -273,10 +314,11 @@ class FlowTests(unittest.TestCase):
                 controller = self.controller(backend)
                 reports = []
                 controller.report = reports.append
-                controller.run()
-                self.assertEqual(backend.actions, ['open', 'scroll', 'select', 'use', 'start', 'confirm', 'game_open', 'average_select', 'average_use', 'exit'])
-                self.assertEqual((reports[-1]['phase'], reports[-1]['state']), ('已退出本局', 'stopped'))
-                self.assertEqual(reports[-1]['auction_average'], 3626)
+                with self.assertRaisesRegex(Stopped, 'F8'):
+                    controller.run()
+                self.assertEqual(backend.actions, ['open', 'scroll', 'select', 'use', 'start', 'confirm', 'game_open', 'average_select', 'average_use', 'exit', 'exit_confirm'])
+                self.assertEqual((reports[-1]['phase'], reports[-1]['state']), ('开始下一局', 'running'))
+                self.assertTrue(any(report['auction_average'] == 3626 for report in reports))
                 self.assertEqual(controller.completed, 1)
 
     def test_wrong_initial_screen_never_sends_input(self):
@@ -296,7 +338,8 @@ class FlowTests(unittest.TestCase):
     def test_target_already_visible_never_scrolls(self):
         backend = FakeAuction()
         backend.target = True
-        self.controller(backend).run()
+        with self.assertRaisesRegex(Stopped, 'F8'):
+            self.controller(backend).run()
         self.assertNotIn('scroll', backend.actions)
 
     def test_failed_selection_does_not_click_purchase(self):
@@ -382,7 +425,8 @@ class FlowTests(unittest.TestCase):
                        AuctionScene('loading', progress=100), game, game])
         backend.observe = lambda: next(frames) if backend.page == 'loading' else original()
         controller = self.controller(backend)
-        controller.run()
+        with self.assertRaisesRegex(Stopped, 'F8'):
+            controller.run()
         self.assertEqual(controller.completed, 1)
 
     def test_loading_disappearance_without_game_anchors_never_opens_instruments(self):
@@ -417,14 +461,15 @@ class FlowTests(unittest.TestCase):
                 backend = FakeAuction()
                 backend.average = value
                 controller = self.controller(backend)
-                controller.run()
-                self.assertEqual(controller.average, value)
+                with self.assertRaisesRegex(Stopped, 'F8'):
+                    controller.run()
                 self.assertEqual(backend.actions.count('exit'), 1)
                 self.assertNotIn('bid_open', backend.actions)
 
     def test_above_threshold_bids_exactly_once_then_waits_until_cancel(self):
         backend = FakeAuction()
         backend.average = 350001
+        backend.result_available = False
         controller = self.controller(backend)
         reports = []
         controller.report = reports.append
@@ -508,6 +553,104 @@ class FlowTests(unittest.TestCase):
             controller.run()
         self.assertNotIn('average_use', backend.actions)
         self.assertNotIn('bid_open', backend.actions)
+
+    def test_low_average_confirms_exit_and_restarts_three_cycles(self):
+        backend = FakeAuction()
+        controller = self.controller(backend, stop_after_cycles=3)
+        with self.assertRaisesRegex(Stopped, 'F8'):
+            controller.run()
+        self.assertEqual(controller.completed, 3)
+        for action in ('open', 'use', 'start', 'confirm', 'average_use', 'exit', 'exit_confirm'):
+            self.assertEqual(backend.actions.count(action), 3)
+        self.assertNotIn('bid_submit', backend.actions)
+
+    def test_winning_bid_skips_then_exits_and_restarts_three_cycles(self):
+        backend = FakeAuction()
+        backend.average = 350001
+        controller = self.controller(backend, stop_after_cycles=3)
+        with self.assertRaisesRegex(Stopped, 'F8'):
+            controller.run()
+        self.assertEqual(controller.completed, 3)
+        for action in ('start', 'bid_submit', 'bid_confirm', 'skip', 'result_exit'):
+            self.assertEqual(backend.actions.count(action), 3)
+        self.assertLess(backend.actions.index('skip'), backend.actions.index('result_exit'))
+        self.assertNotIn('exit', backend.actions)
+
+    def test_next_cycle_reads_its_own_value_instead_of_reusing_high_average(self):
+        backend = FakeAuction()
+        original = backend.click_checked
+        values = iter((350001, 0))
+        def click(scene, action='select'):
+            original(scene, action)
+            if action == 'open':
+                backend.average = next(values)
+        backend.click_checked = click
+        controller = self.controller(backend, stop_after_cycles=2)
+        with self.assertRaisesRegex(Stopped, 'F8'):
+            controller.run()
+        self.assertEqual(controller.completed, 2)
+        self.assertEqual(backend.actions.count('bid_submit'), 1)
+        self.assertEqual(backend.actions.count('exit_confirm'), 1)
+        self.assertIsNone(controller.average)
+
+    def test_result_without_skip_exits_without_clicking_another_button(self):
+        backend = FakeAuction()
+        backend.average = 350001
+        original = backend.observe
+        def observe():
+            scene = original()
+            if scene.page == 'result':
+                scene.skip = None
+            return scene
+        backend.observe = observe
+        controller = self.controller(backend)
+        with self.assertRaisesRegex(Stopped, 'F8'):
+            controller.run()
+        self.assertEqual(controller.completed, 1)
+        self.assertNotIn('skip', backend.actions)
+        self.assertEqual(backend.actions.count('result_exit'), 1)
+
+    def test_unconfirmed_return_does_not_count_or_start_another_game(self):
+        backend = FakeAuction()
+        original = backend.observe
+        backend.observe = lambda: AuctionScene('unknown') if backend.page == 'loading_home' else original()
+        controller = self.controller(backend)
+        with self.assertRaisesRegex(Stopped, 'F8'):
+            controller.run()
+        self.assertEqual(controller.completed, 0)
+        self.assertEqual(backend.actions.count('start'), 1)
+        self.assertEqual(backend.actions.count('exit_confirm'), 1)
+
+    def test_cancel_after_skip_prevents_settlement_exit_and_new_game(self):
+        backend = FakeAuction()
+        backend.average = 350001
+        controller = self.controller(backend)
+        original = backend.click_checked
+        def click(scene, action='select'):
+            original(scene, action)
+            if action == 'skip':
+                controller.stop.set()
+        backend.click_checked = click
+        with self.assertRaisesRegex(Stopped, 'F8'):
+            controller.run()
+        self.assertIn('skip', backend.actions)
+        self.assertNotIn('result_exit', backend.actions)
+        self.assertEqual(controller.completed, 0)
+
+    def test_cancel_at_exit_prompt_prevents_confirmation(self):
+        backend = FakeAuction()
+        controller = self.controller(backend)
+        original = backend.click_checked
+        def click(scene, action='select'):
+            original(scene, action)
+            if action == 'exit':
+                controller.stop.set()
+        backend.click_checked = click
+        with self.assertRaisesRegex(Stopped, 'F8'):
+            controller.run()
+        self.assertIn('exit', backend.actions)
+        self.assertNotIn('exit_confirm', backend.actions)
+        self.assertEqual(controller.completed, 0)
 
 
 class ClickTests(unittest.TestCase):

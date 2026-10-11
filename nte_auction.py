@@ -61,6 +61,8 @@ class AuctionScene:
     keys: dict | None = None
     bid_submit: Box | None = None
     bid_amount: int | None = None
+    skip: Box | None = None
+    result_exit: Box | None = None
 
 
 class AuctionReader:
@@ -89,6 +91,14 @@ class AuctionReader:
         confirms = [box for text, box in words if text == '确认']
         cancels = [box for text, box in words if text == '取消']
         combined = ''.join(text for text, _ in words)
+        exit_bodies = [box for text, box in words if '退出当前竞拍会场' in text or '不返还本局入场费' in text]
+        if any(text == '确认退出' for text, _ in words):
+            if exit_bodies and all(label in combined for label in ('是否退出当前竞拍会场', '放弃竞拍', '不返还本局入场费')) and len(confirms) == len(cancels) == 1:
+                confirm, cancel = confirms[0], cancels[0]
+                bottom = max(box.y + box.height for box in exit_bodies)
+                if min(confirm.y, cancel.y) > bottom and confirm.x > cancel.x and abs(confirm.center[1] - cancel.center[1]) < max(confirm.height, cancel.height):
+                    return AuctionScene('exit_confirm', confirm=confirm, frame=frame)
+            return AuctionScene('unknown')
         bid_warning = [box for text, box in words if '当前出价' in text or '是否确认出价' in text]
         warning_amounts = re.findall(r'检测到当前出价([0-9,]+)疑似异常过高[,，]?是否确认出价[?？]?', combined)
         if bid_warning and warning_amounts:
@@ -106,6 +116,16 @@ class AuctionReader:
                     return AuctionScene('entry_confirm', confirm=confirm, frame=frame)
             return AuctionScene('unknown')
         if (confirms or cancels) and any(text == '提示' for text, _ in words):
+            return AuctionScene('unknown')
+        result_titles = [box for text, box in words if text == '竞拍结束' and box.center[0] < width * 0.4
+                         and box.center[1] < height * 0.3]
+        if result_titles:
+            skips = [box for text, box in words if text == '跳过动画' and box.center[0] > width * 0.6
+                     and box.center[1] > height * 0.85]
+            exits = [box for text, box in words if re.fullmatch(r'退出(?:\(\d+[sS秒]\))?', text)
+                     and box.center[0] > width * 0.8 and box.center[1] > height * 0.85]
+            if len(result_titles) == len(exits) == 1 and len(skips) <= 1 and all(any(text == label for text, _ in words) for label in ('最终成交价', '实际价值', '收益')):
+                return AuctionScene('result', skip=skips[0] if skips else None, result_exit=exits[0], frame=frame)
             return AuctionScene('unknown')
         keypad = self.bid_keypad(words, frame)
         if keypad is not None:
@@ -320,11 +340,13 @@ class AuctionBackend(DesktopBackend):
     def click_checked(self, scene, action='select'):
         targets = {'open': 'group', 'select': 'target', 'use': 'use', 'start': 'start', 'confirm': 'confirm',
                    'game_open': 'instrument', 'average_select': 'target', 'average_use': 'use',
-                   'bid_open': 'bid', 'exit': 'exit', 'bid_submit': 'bid_submit', 'bid_confirm': 'confirm'}
+                   'bid_open': 'bid', 'exit': 'exit', 'bid_submit': 'bid_submit', 'bid_confirm': 'confirm',
+                   'exit_confirm': 'confirm', 'skip': 'skip', 'result_exit': 'result_exit'}
         labels = {'open': '仪器组方框', 'select': TARGET, 'use': scene.use_label, 'start': '开始拍卖按钮',
                   'confirm': '入场确认按钮', 'game_open': '左下仪器按钮',
                   'average_select': AVERAGE_INSTRUMENT, 'average_use': '九格均价仪器使用按钮',
-                  'bid_open': '出价按钮', 'exit': '左上退出图标', 'bid_submit': '确认出价按钮', 'bid_confirm': '五百万出价确认按钮'}
+                  'bid_open': '出价按钮', 'exit': '左上退出图标', 'bid_submit': '确认出价按钮', 'bid_confirm': '五百万出价确认按钮',
+                  'exit_confirm': '放弃本局竞拍确认按钮', 'skip': '跳过动画按钮', 'result_exit': '结算退出按钮'}
         target = getattr(scene, targets[action])
         if target is None:
             raise ValueError('没有唯一操作按钮位置，暂停点击')
@@ -333,7 +355,8 @@ class AuctionBackend(DesktopBackend):
         current = getattr(fresh, targets[action])
         expected = {'confirm': 'entry_confirm', 'open': 'home', 'start': 'home', 'game_open': 'game',
                     'average_select': 'instrument_list', 'average_use': 'instrument_list', 'bid_open': 'game',
-                    'exit': 'game', 'bid_submit': 'bid_input', 'bid_confirm': 'bid_confirm'}.get(action, 'instruments')
+                    'exit': 'game', 'bid_submit': 'bid_input', 'bid_confirm': 'bid_confirm',
+                    'exit_confirm': 'exit_confirm', 'skip': 'result', 'result_exit': 'result'}.get(action, 'instruments')
         if fresh.page != expected or current is None or max(abs(a-b) for a, b in zip(current.center, target.center)) > 16:
             raise ValueError('移动后仪器组界面或位置变化，重新识别后再点击')
         if action in ('use', 'average_use') and (not fresh.selected or fresh.target is None or fresh.use_label != scene.use_label):
@@ -392,7 +415,7 @@ class AuctionController(Controller):
                          'auction_average': getattr(self, 'average', None),
                          'phase': '已暂停' if reason else phase,
                          'state': 'paused' if reason else ('stopped' if completed else 'running'),
-                         'details': reason or phase, 'completed': int(completed), 'failures': 0})
+                         'details': reason or phase, 'completed': self.completed, 'failures': 0})
 
     def run(self):
         self.average = None
@@ -439,6 +462,17 @@ class AuctionController(Controller):
                         self.publish('等待竞拍界面' if state == 'loading' else '等待匹配成功 / 加载画面')
                 elif state == 'waiting_result':
                     self.publish('等待竞拍结果')
+                    dialog_frames = dialog_frames + 1 if scene.page == 'result' else 0
+                    if dialog_frames >= self.c['confirm_frames']:
+                        if scene.skip is not None:
+                            self.b.click_checked(scene, 'skip')
+                            self.message('已识别竞拍结束并点击跳过动画，等待结算退出按钮')
+                            state = 'result_skipped'
+                        else:
+                            self.b.click_checked(scene, 'result_exit')
+                            self.message('结算画面无跳过动画按钮，已点击退出，等待返回初始界面')
+                            state = 'returning_home'
+                        dialog_frames = 0
                 elif scene.page == 'unknown':
                     cursor_frames = dialog_frames = selected_frames = 0
                     value_frames, last_value = 0, None
@@ -572,12 +606,40 @@ class AuctionController(Controller):
                     else:
                         dialog_frames = 0
                 elif state == 'exiting':
-                    self.publish('等待退出画面')
+                    self.publish('等待放弃竞拍确认')
+                    dialog_frames = dialog_frames + 1 if scene.page == 'exit_confirm' else 0
+                    if dialog_frames >= self.c['confirm_frames']:
+                        self.b.click_checked(scene, 'exit_confirm')
+                        self.message('已确认放弃本局竞拍，等待加载并返回初始界面')
+                        state = 'returning_home'
+                        dialog_frames = 0
+                    elif scene.page == 'home':
+                        state = 'returning_home'
+                        dialog_frames = 0
+                elif state == 'result_skipped':
+                    self.publish('等待结算退出按钮')
+                    dialog_frames = dialog_frames + 1 if scene.page == 'result' else 0
+                    if dialog_frames >= self.c['confirm_frames']:
+                        self.b.click_checked(scene, 'result_exit')
+                        self.message('已点击结算退出，等待加载并返回初始界面')
+                        state = 'returning_home'
+                        dialog_frames = 0
+                elif state == 'returning_home':
+                    if scene.page == 'loading':
+                        self.publish(f'返回加载中 {scene.progress}%' if scene.progress is not None else '返回加载中')
+                    else:
+                        self.publish('等待返回初始界面')
                     dialog_frames = dialog_frames + 1 if scene.page == 'home' else 0
                     if dialog_frames >= self.c['confirm_frames']:
-                        self.completed = 1
-                        self.publish('已退出本局', completed=True)
-                        return
+                        self.completed += 1
+                        self.message(f'已确认返回初始界面，本次完成 {self.completed} 局，开始下一局')
+                        self.average = None
+                        state = 'cursor'
+                        cursor_frames = dialog_frames = selected_frames = value_frames = 0
+                        last_value = None
+                        edge = False
+                        self.b.list_stable = 0
+                        self.publish('开始下一局')
                 else:
                     cursor_frames = dialog_frames = selected_frames = 0
                     value_frames, last_value = 0, None

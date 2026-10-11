@@ -98,6 +98,19 @@ def self_test(report):
             scene = AuctionReader(reader).inspect(cv2.cvtColor(np.array(keypad), cv2.COLOR_RGB2BGR))
             if scene.page != 'bid_input' or scene.bid_amount != 5000000 or set(scene.keys or {}) != {'5', '00', '0000', 'clear'}:
                 raise RuntimeError(f'生成的出价键盘 OCR 自检失败：{scene.page} / {scene.bid_amount}')
+            for expected, labels in (
+                ('result', (((80, 150), '竞拍结束'), ((120, 450), '最终成交价'), ((500, 450), '实际价值'),
+                            ((850, 450), '收益'), ((1370, 980), '跳过动画'), ((1660, 980), '退出(103s)'))),
+                ('exit_confirm', (((880, 250), '确认退出'),
+                                  ((180, 460), '是否退出当前竞拍会场？退出将视为放弃竞拍，且不返还本局入场费。'),
+                                  ((690, 690), '取消'), ((1100, 690), '确认')))):
+                sample = Image.new('RGB', (1920, 1080), '#172132')
+                drawing = ImageDraw.Draw(sample)
+                for position, text in labels:
+                    drawing.text(position, text, font=small_font if len(text) > 25 else font, fill='white')
+                scene = AuctionReader(reader).inspect(cv2.cvtColor(np.array(sample), cv2.COLOR_RGB2BGR))
+                if scene.page != expected:
+                    raise RuntimeError(f'生成的竞拍返回界面 OCR 自检失败：{expected} / {scene.page}')
         import tkinter as tk
         root = tk.Tk()
         app = App(root)
@@ -108,9 +121,9 @@ def self_test(report):
         root.update()
         if app.feature != 'auction' or app.heading.get() != '即刻落槌' or app.mode_list.winfo_ismapped() or app.metric_score.get() != '—':
             raise RuntimeError('GUI 即刻落槌栏目切换测试失败')
-        app.runtime.apply({'auction_average': 3626})
+        app.runtime.apply({'auction_average': 3626, 'completed': 2})
         app.paint_status()
-        if app.metric_score.get() != '3,626' or app.score_caption.get() != '九格平均价值':
+        if app.metric_score.get() != '3,626' or app.score_caption.get() != '九格平均价值' or app.metric_runs.get() != '2 局':
             raise RuntimeError('GUI 九格平均价值显示测试失败')
         app.busy = True
         app.feature_buttons['pianist'].invoke()
@@ -280,7 +293,7 @@ def self_test(report):
             area = api.geometry(int(api.u.GetAncestor(root.winfo_id(), 2)))
             pyautogui.screenshot(region=area.region()).save(str(Path(report).with_suffix('.png')))
         app.close()
-        data = {'status': 'passed', 'score': 1900, 'gui': 'passed', 'auction_controls': 'passed', 'auction_average_ocr': 'passed', 'auction_bid_ocr': 'passed', 'f8_global': 'passed', 'f8_polling': 'passed', 'f8_gui_restore': 'passed', 'progression_controls': 'passed', 'level_ocr': 'passed', 'star_anchors': 'passed', 'cursor_capture': 'passed', 'mouse_input': 'passed', 'stop_button': 'passed', 'overlay': 'passed', 'window_geometry': 'passed', 'frozen': bool(getattr(sys, 'frozen', False))}
+        data = {'status': 'passed', 'score': 1900, 'gui': 'passed', 'auction_controls': 'passed', 'auction_average_ocr': 'passed', 'auction_bid_ocr': 'passed', 'auction_return_ocr': 'passed', 'f8_global': 'passed', 'f8_polling': 'passed', 'f8_gui_restore': 'passed', 'progression_controls': 'passed', 'level_ocr': 'passed', 'star_anchors': 'passed', 'cursor_capture': 'passed', 'mouse_input': 'passed', 'stop_button': 'passed', 'overlay': 'passed', 'window_geometry': 'passed', 'frozen': bool(getattr(sys, 'frozen', False))}
         code = 0
     except Exception as error:
         data, code = {'status': 'failed', 'error': str(error)}, 1
@@ -299,7 +312,7 @@ class App:
         self.feature = 'pianist'
         self.runtime = RuntimeStatus()
         self.overlay = None
-        root.title('异环助手 · 店长特供 1.1.17')
+        root.title('异环助手 · 店长特供 1.1.18')
         root.geometry('980x820')
         root.minsize(920, 760)
         root.configure(bg='#0b1220')
@@ -339,7 +352,7 @@ class App:
             button = ttk.Button(sidebar, text=label, style='Accent.TButton' if key == 'pianist' else 'TButton', command=lambda feature=key: self.select_feature(feature))
             button.pack(fill='x', pady=5)
             self.feature_buttons[key] = button
-        tk.Label(sidebar, text='当前游戏窗口\n自动读取尺寸\n\nv1.1.17', bg='#101b31', fg='#61738d', justify='left', font=('Segoe UI', 10), anchor='sw').pack(side='bottom', fill='x')
+        tk.Label(sidebar, text='当前游戏窗口\n自动读取尺寸\n\nv1.1.18', bg='#101b31', fg='#61738d', justify='left', font=('Segoe UI', 10), anchor='sw').pack(side='bottom', fill='x')
 
         outer = ttk.Frame(root, padding=(24, 22))
         outer.pack(fill='both', expand=True)
@@ -443,9 +456,9 @@ class App:
         self.metric_phase.set(self.runtime.phase)
         auction = self.runtime.mode == 'auction'
         self.score_caption.set('九格平均价值' if auction else '营业额')
-        self.progress_caption.set('本次状态' if auction else '本次进度')
+        self.progress_caption.set('本次进度')
         self.metric_score.set(self.runtime.average_text if auction else self.runtime.score_text)
-        self.metric_runs.set(('已退出本局' if self.runtime.completed else '运行中' if self.busy else '就绪') if auction else f'{self.runtime.completed} {self.runtime.progress_unit} · {self.runtime.failures}/3 失败')
+        self.metric_runs.set(f'{self.runtime.completed} 局' if auction else f'{self.runtime.completed} {self.runtime.progress_unit} · {self.runtime.failures}/3 失败')
         self.status.set(self.runtime.details)
         if self.busy:
             self.subtitle.set('即刻落槌  /  当前阶段 ' + self.runtime.phase if auction else f'{self.runtime.mode_text}  /  当前关卡 {self.runtime.level}')
@@ -456,7 +469,7 @@ class App:
         self.feature = feature
         label = '即刻落槌' if feature == 'auction' else '店长特供'
         self.heading.set(label)
-        self.root.title(f'异环助手 · {label} 1.1.17')
+        self.root.title(f'异环助手 · {label} 1.1.18')
         for key, button in self.feature_buttons.items():
             button.configure(style='Accent.TButton' if key == feature else 'TButton')
         self.update_mode()
@@ -473,7 +486,7 @@ class App:
             self.level_list.configure(state='disabled')
             if not self.busy:
                 self.subtitle.set('竞拍自动操作  /  从初始界面开始')
-            self.summary.set('至尊仪器组入场 → 使用九格均价仪器；均价 > 350,000 出价 5,000,000 并等待，否则退出本局。')
+            self.summary.set('使用九格均价仪器；均价 > 350,000 出价 5,000,000，否则退出；结算 / 退出回到初始界面后自动循环。')
             return
         for widget in self.mode_widgets:
             widget.grid()
@@ -610,9 +623,9 @@ class App:
                 emit('检查不会点击或改变窗口尺寸。开始运行必须是所选栏目对应的初始界面。')
             else:
                 if auction:
-                    emit('版本 1.1.17：即刻落槌；入场后使用九格均价仪器；均价 > 350,000 出价 5,000,000 并等待，否则点击左上退出。')
+                    emit('版本 1.1.18：即刻落槌；均价 > 350,000 出价 5,000,000，否则确认退出；结算或退出回到初始界面后自动循环，F8 停止。')
                 else:
-                    emit(f'版本 1.1.17：{workflow.MODES[config["mode"]]}；开始关卡 {config["start_level"] if config["mode"] == "progression" else "3-10"}；滚动间隔 {config["scroll_interval"]} 秒。')
+                    emit(f'版本 1.1.18：{workflow.MODES[config["mode"]]}；开始关卡 {config["start_level"] if config["mode"] == "progression" else "3-10"}；滚动间隔 {config["scroll_interval"]} 秒。')
                 controller = AuctionController if auction else workflow.Controller
                 controller(config, desktop, self.stop, log=emit, report=lambda data: self.events.put(('runtime', data))).run()
         except engine.Stopped as error:

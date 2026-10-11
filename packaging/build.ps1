@@ -1,4 +1,4 @@
-param([string]$Version = "1.1.17")
+param([string]$Version = "1.1.18")
 $ErrorActionPreference = "Stop"
 Set-Location (Split-Path $PSScriptRoot -Parent)
 python -m PyInstaller --noconfirm --clean --windowed --uac-admin --onedir --name NTE-AI --add-data "assets;assets" --collect-all rapidocr_onnxruntime --collect-all onnxruntime --collect-all pyautogui --collect-all pynput app.py 2>&1 | Tee-Object -FilePath pyinstaller-build.log
@@ -39,4 +39,4 @@ if ($process.ExitCode -ne 0) {
     throw "Installed application smoke test failed"
 }
 $report = Get-Content installed-test.json -Raw | ConvertFrom-Json
-if ($report.status -ne "passed" -or $report.gui -ne "passed" -or $report.auction_controls -ne "passed" -or $report.auction_average_ocr -ne "passed" -or $report.auction_bid_ocr -ne "passed" -or $report.f8_global -ne "passed" -or $report.f8_polling -ne "passed" -or $report.f8_gui_restore -ne "passed" -or $report.progression_controls -ne "passed" -or $report.level_ocr -ne "passed" -or $report.overlay -ne "passed" -or $report.stop_button -ne "passed" -or $report.cursor_capture -ne "passed" -or $report.mouse_input -ne "passed" -or $report.star_anchors -ne "passed") { throw "Installed GUI/OCR/progression/anchor/cursor/overlay test failed" }
+if ($report.status -ne "passed" -or $report.gui -ne "passed" -or $report.auction_controls -ne "passed" -or $report.auction_average_ocr -ne "passed" -or $report.auction_bid_ocr -ne "passed" -or $report.auction_return_ocr -ne "passed" -or $report.f8_global -ne "passed" -or $report.f8_polling -ne "passed" -or $report.f8_gui_restore -ne "passed" -or $report.progression_controls -ne "passed" -or $report.level_ocr -ne "passed" -or $report.overlay -ne "passed" -or $report.stop_button -ne "passed" -or $report.cursor_capture -ne "passed" -or $report.mouse_input -ne "passed" -or $report.star_anchors -ne "passed") { throw "Installed GUI/OCR/progression/anchor/cursor/overlay test failed" }
