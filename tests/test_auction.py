@@ -264,10 +264,12 @@ class RegionalOCRTests(unittest.TestCase):
                 self.assertEqual(reader.inspect(self.frame, 'read_average').page, 'unknown')
         self.assertEqual([shape == self.frame.shape for shape, _ in calls], [False, True, False, False, True])
 
-    def test_recovery_value_is_not_reused_when_next_frame_is_unrecognized(self):
-        reader = AuctionReader(SimpleNamespace(cv=cv2, ocr=lambda image, **kwargs: (self.game('500,001'), None)))
-        with patch.object(reader, 'region_rows', return_value=[]), patch('nte_auction.time.monotonic', side_effect=(10, 10.1)):
+    def test_successful_full_recovery_uses_fresh_scans_and_can_confirm_consecutive_frames(self):
+        rows = iter((self.game('500,001'), self.game('0'), []))
+        reader = AuctionReader(SimpleNamespace(cv=cv2, ocr=lambda image, **kwargs: (next(rows), None)))
+        with patch.object(reader, 'region_rows', return_value=[]), patch('nte_auction.time.monotonic', return_value=10):
             self.assertEqual(reader.inspect(self.frame, 'read_average').average, 500001)
+            self.assertEqual(reader.inspect(self.frame, 'game').average, 0)
             next_scene = reader.inspect(self.frame, 'read_average')
         self.assertEqual(next_scene.page, 'unknown')
         self.assertIsNone(next_scene.average)

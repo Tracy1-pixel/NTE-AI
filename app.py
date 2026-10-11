@@ -77,7 +77,11 @@ def self_test(report):
                 auction_reader = AuctionReader(reader)
                 scene = auction_reader.inspect(cv2.cvtColor(np.array(image), cv2.COLOR_RGB2BGR), stage)
                 if auction_reader.next_full_scan:
-                    raise RuntimeError(f'局部 OCR 未独立识别生成画面：{stage}')
+                    from nte_auction import OCR_REGIONS, REFERENCE
+                    normalized = cv2.resize(cv2.cvtColor(np.array(image), cv2.COLOR_RGB2BGR), REFERENCE)
+                    rows = auction_reader.region_rows(normalized, OCR_REGIONS[stage])
+                    labels = [(text, round(float(confidence), 3)) for _, text, confidence in rows]
+                    raise RuntimeError(f'局部 OCR 未独立识别生成画面：{stage}；恢复页={scene.page}；局部文字={labels}')
                 return scene
             font_path = Path(os.environ.get('WINDIR', r'C:\Windows')) / 'Fonts' / 'msyh.ttc'
             font = ImageFont.truetype(str(font_path), 36)

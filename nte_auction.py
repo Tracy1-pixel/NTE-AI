@@ -37,6 +37,11 @@ OCR_REGIONS = {
     **dict.fromkeys(('matching', 'exiting', 'bid_submitted', 'entry_confirm', 'exit_confirm', 'bid_confirm'), DIALOG_REGIONS),
     **dict.fromkeys(('waiting_result', 'result_skipped', 'result'), RESULT_REGIONS),
 }
+REGION_PAGES = {HOME_REGIONS: ('home',), RETURN_REGIONS: ('home', 'loading'),
+                PREP_REGIONS: ('instruments',), LIST_REGIONS: ('instrument_list',),
+                GAME_REGIONS: ('game', 'loading'), KEYPAD_REGIONS: ('bid_input',),
+                DIALOG_REGIONS: ('entry_confirm', 'exit_confirm', 'bid_confirm', 'game', 'home'),
+                RESULT_REGIONS: ('result',)}
 
 
 def compact(text):
@@ -94,11 +99,12 @@ class AuctionReader:
     def __init__(self, reader):
         self.reader, self.cv = reader, reader.cv
         self.next_full_scan = {}
+        self.full_scan_regions = set()
 
     def inspect(self, frame, stage='auto'):
         frame = self.cv.resize(frame, REFERENCE)
         regions = OCR_REGIONS.get(stage)
-        if regions is None:
+        if regions is None or regions in self.full_scan_regions:
             rows, _ = self.reader.ocr(frame, use_cls=False)
             return self.from_rows(rows or [], frame)
         scene = self.from_rows(self.region_rows(frame, regions), frame)
@@ -108,11 +114,17 @@ class AuctionReader:
         if (scene.page != 'unknown' and not missing_value) or stage in ('home', 'cursor'):
             return scene
         now = time.monotonic()
-        if now < self.next_full_scan.get(stage, 0):
+        if now < self.next_full_scan.get(regions, 0):
             return scene
-        self.next_full_scan[stage] = now + 2
+        self.next_full_scan[regions] = now + 2
         rows, _ = self.reader.ocr(frame, use_cls=False)
-        return self.from_rows(rows or [], frame)
+        recovered = self.from_rows(rows or [], frame)
+        if recovered.page in REGION_PAGES[regions] and not (stage == 'read_average' and recovered.average is None):
+            # A successful full scan switches this region layout to fresh full
+            # scans for this run. Otherwise intervening failed crops would reset
+            # consecutive confirmation counters and prevent recovery entirely.
+            self.full_scan_regions.add(regions)
+        return recovered
 
     def region_rows(self, frame, regions):
         patches, packed_height = [], 0
@@ -124,7 +136,9 @@ class AuctionReader:
         canvas = np.zeros((packed_height - 24, max(p[0].shape[1] for p in patches), 3), dtype=frame.dtype)
         for patch, _, _, offset in patches:
             canvas[offset:offset + patch.shape[0], :patch.shape[1]] = patch
-        scale = min(1, 1280 / max(canvas.shape[:2]))
+        # Keep the original letter size for the two dense instrument panels.
+        max_side = 2000 if regions in (PREP_REGIONS, LIST_REGIONS) else 1280
+        scale = min(1, max_side / max(canvas.shape[:2]))
         ocr_canvas = self.cv.resize(canvas, (round(canvas.shape[1] * scale), round(canvas.shape[0] * scale))) if scale < 1 else canvas
         scale_x, scale_y = ocr_canvas.shape[1] / canvas.shape[1], ocr_canvas.shape[0] / canvas.shape[0]
         rows, _ = self.reader.ocr(ocr_canvas, use_cls=False)
