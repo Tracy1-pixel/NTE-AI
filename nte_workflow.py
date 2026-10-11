@@ -123,9 +123,12 @@ class Controller:
 
     def wait(self, seconds):
         end = self.clock() + seconds
-        while self.clock() < end:
+        while True:
             self.check()
-            self.sleep(min(0.05, end - self.clock()))
+            remaining = end - self.clock()
+            if remaining <= 0:
+                return
+            self.sleep(min(0.05, remaining))
 
     def message(self, text):
         if self.last_message != text:
